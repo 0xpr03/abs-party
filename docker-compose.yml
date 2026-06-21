@@ -1,0 +1,10 @@
+services:
+  abs-party:
+    build: .
+    ports:
+      - "3456:3456"
+    environment:
+      - ABS_BASE_URL=${ABS_BASE_URL:-https://some.domain}
+      - BIND=0.0.0.0:3456
+      - RUST_LOG=abs_party=info
+    restart: unless-stopped

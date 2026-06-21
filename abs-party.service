@@ -1,0 +1,36 @@
+[Unit]
+Description=ABS Party — synchronized audiobook listening
+Documentation=https://github.com/yourorg/abs-party
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=abs-party
+Group=abs-party
+
+WorkingDirectory=/opt/abs-party
+ExecStart=/opt/abs-party/abs-party
+
+# All runtime configuration lives in this env file.
+# Copy abs-party.env.example → /etc/abs-party/env and edit it.
+EnvironmentFile=/etc/abs-party/env
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ReadWritePaths=/opt/abs-party/static
+
+[Install]
+WantedBy=multi-user.target
