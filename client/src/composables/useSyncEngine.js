@@ -4,10 +4,8 @@
 
 const DRIFT_THRESHOLD = 2.5
 
-export function useSyncEngine(player, rtt) {
-  function handleMessage(msg, isHost) {
-    if (isHost) return // host drives, never receives own commands back
-
+export function useSyncEngine(player, rtt, onDesync) {
+  function handleMessage(msg) {
     switch (msg.type) {
       case 'play': {
         // Compensate for network latency: advance position by half RTT
@@ -28,10 +26,10 @@ export function useSyncEngine(player, rtt) {
         player.setSpeed(msg.rate)
         break
       case 'sync': {
-        // Periodic drift correction
         const drift = Math.abs(player.currentTime.value - msg.position)
         if (drift > DRIFT_THRESHOLD) {
           player.seekTo(msg.position)
+          onDesync?.()
         }
         break
       }

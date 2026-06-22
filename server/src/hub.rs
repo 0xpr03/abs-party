@@ -62,11 +62,16 @@ pub async fn handle_play(rooms: &RoomMap, room_id: &str, sender_id: Uuid, positi
     if !position.is_finite() || position < 0.0 { return; }
     if let Some(arc) = rooms.get(room_id).map(|r| r.clone()) {
         let mut room = arc.lock().await;
+        let sender_name = room.participants.iter()
+            .find(|p| p.id == sender_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         room.position = position;
         room.playing = true;
         let msg = ServerMessage::Play {
             position,
             host_time: now_millis(),
+            sender_name,
         };
         room.broadcast_except(sender_id, &msg);
     }
@@ -76,9 +81,13 @@ pub async fn handle_pause(rooms: &RoomMap, room_id: &str, sender_id: Uuid, posit
     if !position.is_finite() || position < 0.0 { return; }
     if let Some(arc) = rooms.get(room_id).map(|r| r.clone()) {
         let mut room = arc.lock().await;
+        let sender_name = room.participants.iter()
+            .find(|p| p.id == sender_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         room.position = position;
         room.playing = false;
-        let msg = ServerMessage::Pause { position };
+        let msg = ServerMessage::Pause { position, sender_name };
         room.broadcast_except(sender_id, &msg);
     }
 }
@@ -90,8 +99,12 @@ pub async fn handle_seek(rooms: &RoomMap, room_id: &str, sender_id: Uuid, positi
         if !room.is_host(sender_id) {
             return;
         }
+        let sender_name = room.participants.iter()
+            .find(|p| p.id == sender_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         room.position = position;
-        let msg = ServerMessage::Seek { position };
+        let msg = ServerMessage::Seek { position, sender_name };
         room.broadcast_except(sender_id, &msg);
     }
 }
@@ -103,8 +116,12 @@ pub async fn handle_speed(rooms: &RoomMap, room_id: &str, sender_id: Uuid, rate:
         if !room.is_host(sender_id) {
             return;
         }
+        let sender_name = room.participants.iter()
+            .find(|p| p.id == sender_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         room.speed = rate;
-        let msg = ServerMessage::Speed { rate };
+        let msg = ServerMessage::Speed { rate, sender_name };
         room.broadcast_except(sender_id, &msg);
     }
 }

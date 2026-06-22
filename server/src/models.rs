@@ -48,15 +48,19 @@ pub enum ServerMessage {
     Play {
         position: f64,
         host_time: u64,
+        sender_name: String,
     },
     Pause {
         position: f64,
+        sender_name: String,
     },
     Seek {
         position: f64,
+        sender_name: String,
     },
     Speed {
         rate: f64,
+        sender_name: String,
     },
     Sync {
         position: f64,
@@ -152,7 +156,7 @@ mod tests {
 
     #[test]
     fn server_message_play_serializes() {
-        let msg = ServerMessage::Play { position: 123.4, host_time: 1000 };
+        let msg = ServerMessage::Play { position: 123.4, host_time: 1000, sender_name: "Alice".into() };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"play""#));
         assert!(json.contains(r#""position":123.4"#));

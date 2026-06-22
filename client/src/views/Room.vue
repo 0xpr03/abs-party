@@ -57,11 +57,11 @@
 
             <!-- Controls -->
             <div class="controls">
-              <button class="ctrl-btn" @click="skip(-30)" :disabled="!isHost">-30s</button>
+              <button class="ctrl-btn" @click="skip(-10)" :disabled="!isHost">-10s</button>
               <button class="ctrl-btn play-btn" @click="togglePlay">
                 {{ player.isPlaying.value ? '⏸' : '▶' }}
               </button>
-              <button class="ctrl-btn" @click="skip(30)" :disabled="!isHost">+30s</button>
+              <button class="ctrl-btn" @click="skip(10)" :disabled="!isHost">+10s</button>
             </div>
 
             <!-- Speed -->
@@ -119,17 +119,27 @@
           </ul>
         </div>
       </div>
+
+      <!-- Event log -->
+      <div v-if="eventLog.length > 0" class="event-log">
+        <div v-for="(e, i) in eventLog" :key="i" class="event-entry" :class="`event-${e.level}`">
+          <span class="event-time">{{ e.time }}</span>
+          <span class="event-msg">{{ e.message }}</span>
+        </div>
+      </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, inject, onMounted } from 'vue'
+import { ref, reactive, computed, inject, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWebSocket } from '../composables/useWebSocket.js'
 import { useAbsPlayer } from '../composables/useAbsPlayer.js'
 import { useSyncEngine } from '../composables/useSyncEngine.js'
 import { getBookmarks, createBookmark } from '../api/abs.js'
+import { useEventLog } from '../composables/useEventLog.js'
+import { useAudioCues } from '../composables/useAudioCues.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -151,10 +161,34 @@ const isHost = ref(isNewRoom)
 const speed = ref(1)
 const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
+const isCreator = isNewRoom   // constant: true if this tab created the room
+let hasConnectedOnce = false
+
 const player = useAbsPlayer(absBase)
 
+const { events: eventLog, addEvent } = useEventLog()
+const { playJoinLeave, playAlert } = useAudioCues(player.volume)
+
 const { connect, send, connected, rtt } = useWebSocket(handleMessage)
-const { handleMessage: applySyncMsg } = useSyncEngine(player, rtt)
+const { handleMessage: applySyncMsg } = useSyncEngine(player, rtt, () => {
+  addEvent('Desync detected — correcting…', 'alert')
+  playAlert()
+})
+
+watch(connected, (val, old) => {
+  if (old && !val) {
+    participants.value = []
+    addEvent('Connection lost — reconnecting…', 'alert')
+    playAlert()
+  } else if (!old && val) {
+    if (hasConnectedOnce) {
+      addEvent('Reconnected', 'normal')
+      playAlert()
+      rejoinRoom()
+    }
+    hasConnectedOnce = true
+  }
+})
 
 onMounted(async () => {
   if (!auth.token) {
@@ -216,6 +250,7 @@ async function handleMessage(msg) {
       try {
         const session = await player.open(auth.token, roomState.item.id)
         bookmarkSaved.value = true
+        setTimeout(() => { bookmarkSaved.value = false }, 5000)
         await loadBookmarks()
         if (isNewRoom) {
           // Host: start from their own last ABS position and publish it so guests sync correctly
@@ -231,16 +266,31 @@ async function handleMessage(msg) {
       } catch (e) {
         fatalError.value = 'Failed to open playback session: ' + e.message
       }
+    } else {
+      // Reconnect: player already open — resync state
+      if (isCreator) {
+        const pos = player.currentTime.value
+        send({ type: 'seek', position: pos })
+      } else {
+        player.seekTo(roomState.position)
+        if (roomState.playing) player.play()
+        else player.pause()
+        player.setSpeed(roomState.speed)
+      }
     }
     return
   }
 
   if (msg.type === 'participant_joined') {
     participants.value.push({ name: msg.name, is_host: false })
+    addEvent(`${msg.name} joined`, 'normal')
+    playJoinLeave()
     return
   }
   if (msg.type === 'participant_left') {
     participants.value = participants.value.filter(p => p.name !== msg.name)
+    addEvent(`${msg.name} left`, 'normal')
+    playJoinLeave()
     return
   }
   if (msg.type === 'host_changed') {
@@ -253,7 +303,27 @@ async function handleMessage(msg) {
     return
   }
 
-  applySyncMsg(msg, isHost.value)
+  if (msg.type === 'play')  addEvent(`${msg.sender_name} resumed playback`, 'normal')
+  if (msg.type === 'pause') addEvent(`${msg.sender_name} paused playback`, 'normal')
+  if (msg.type === 'seek')  addEvent(`${msg.sender_name} seeked to ${fmt(msg.position)}`, 'normal')
+  if (msg.type === 'speed') addEvent(`${msg.sender_name} changed speed to ${msg.rate}×`, 'normal')
+
+  applySyncMsg(msg)
+}
+
+function rejoinRoom() {
+  if (isCreator && roomState.item?.id) {
+    send({
+      type: 'create_room',
+      abs_token: auth.token,
+      item_id: roomState.item.id,
+      item_title: roomState.item.title,
+      item_author: roomState.item.author,
+      library_id: roomState.item.library_id,
+    })
+  } else if (roomId.value && roomId.value !== 'new') {
+    send({ type: 'join', room_id: roomId.value, abs_token: auth.token })
+  }
 }
 
 function togglePlay() {
@@ -261,9 +331,11 @@ function togglePlay() {
   if (player.isPlaying.value) {
     player.pause()
     send({ type: 'pause', position: pos })
+    addEvent('You paused playback', 'normal')
   } else {
     player.play()
     send({ type: 'play', position: pos })
+    addEvent('You resumed playback', 'normal')
   }
 }
 
@@ -272,6 +344,7 @@ function onSeek(evt) {
   const pos = Number(evt.target.value)
   player.seekTo(pos)
   send({ type: 'seek', position: pos })
+  addEvent(`You seeked to ${fmt(pos)}`, 'normal')
 }
 
 function skip(seconds) {
@@ -279,6 +352,7 @@ function skip(seconds) {
   const pos = Math.max(0, player.currentTime.value + seconds)
   player.seekTo(pos)
   send({ type: 'seek', position: pos })
+  addEvent(`You seeked to ${fmt(pos)}`, 'normal')
 }
 
 function seekToBookmark(b) {
@@ -291,6 +365,7 @@ function onSpeedChange() {
   if (!isHost.value) return
   player.setSpeed(speed.value)
   send({ type: 'speed', rate: speed.value })
+  addEvent(`You changed speed to ${speed.value}×`, 'normal')
 }
 
 async function loadBookmarks() {
@@ -337,7 +412,7 @@ function fmt(s) {
 </script>
 
 <style scoped>
-.room-page { display: flex; flex-direction: column; height: 100vh; }
+.room-page { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .room-header { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 1.5rem; background: #16213e; border-bottom: 1px solid #0f3460; flex-wrap: wrap; }
 .room-meta { flex: 1; }
 .room-title { font-weight: 700; font-size: 1rem; color: #e0e0e0; }
@@ -346,7 +421,7 @@ function fmt(s) {
 .btn-copy { background: none; border: none; cursor: pointer; font-size: 1rem; line-height: 1; }
 .btn-leave { background: #d63031; border: none; border-radius: 6px; color: #fff; padding: 0.4rem 1rem; cursor: pointer; font-size: 0.85rem; }
 
-.room-body { display: flex; flex: 1; overflow: hidden; }
+.room-body { display: flex; flex: 1; overflow: hidden; min-height: 0; }
 .player-area { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 2rem; overflow-y: auto; }
 .sidebar { width: 220px; border-left: 1px solid #0f3460; padding: 1rem; overflow-y: auto; background: #16213e; }
 
@@ -392,4 +467,10 @@ function fmt(s) {
 .host-badge { font-size: 0.7rem; background: #6c5ce7; color: #fff; padding: 0.15rem 0.4rem; border-radius: 4px; }
 .fatal { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 1rem; color: #ff7675; }
 .fatal button { background: #6c5ce7; border: none; border-radius: 6px; color: #fff; padding: 0.6rem 1.5rem; cursor: pointer; }
+
+.event-log { background: #080815; border-top: 1px solid #0f3460; padding: 0.35rem 1rem; font-family: monospace; font-size: 0.72rem; display: flex; flex-direction: column; gap: 0.1rem; }
+.event-entry { display: flex; gap: 0.75rem; }
+.event-time { color: #444; flex-shrink: 0; }
+.event-normal .event-msg { color: #778; }
+.event-alert .event-msg { color: #e17055; }
 </style>

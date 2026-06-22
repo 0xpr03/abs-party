@@ -10,7 +10,7 @@ export function useAbsPlayer(absBase) {
   const currentTime = ref(0)
   const duration = ref(0)
   const isPlaying = ref(false)
-  const volume = ref(1)
+  const volume = ref(audio.volume)
 
   let hls = null
   // For direct-play multi-track books: all tracks + current index
