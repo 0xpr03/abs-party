@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="app-root">
     <nav class="nav">
       <span class="nav-brand">🎧 ABS Party</span>
       <span v-if="auth.username" class="nav-user">
@@ -7,7 +7,9 @@
         <button class="btn-sm" @click="logout">Logout</button>
       </span>
     </nav>
-    <router-view />
+    <div class="app-content">
+      <router-view />
+    </div>
   </div>
 </template>
 
@@ -58,6 +60,8 @@ provide('ABS_BASE', props.absBaseUrl)
   background: #16213e;
   border-bottom: 1px solid #0f3460;
 }
+.app-root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.app-content { flex: 1; overflow: hidden; min-height: 0; }
 .nav-brand { font-size: 1.2rem; font-weight: 700; color: #a29bfe; }
 .nav-user { display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; }
 .btn-sm { padding: 0.25rem 0.75rem; background: #6c5ce7; border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 0.8rem; }

@@ -412,7 +412,7 @@ function fmt(s) {
 </script>
 
 <style scoped>
-.room-page { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.room-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .room-header { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 1.5rem; background: #16213e; border-bottom: 1px solid #0f3460; flex-wrap: wrap; }
 .room-meta { flex: 1; }
 .room-title { font-weight: 700; font-size: 1rem; color: #e0e0e0; }
