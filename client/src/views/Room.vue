@@ -359,6 +359,7 @@ function seekToBookmark(b) {
   if (!isHost.value) return
   player.seekTo(b.time)
   send({ type: 'seek', position: b.time })
+  addEvent(`You seeked to ${fmt(b.time)}`, 'normal')
 }
 
 function onSpeedChange() {
