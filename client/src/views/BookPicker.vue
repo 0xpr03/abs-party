@@ -6,7 +6,7 @@
         <button class="btn-ghost" @click="router.back()">← Back</button>
       </header>
 
-      <div v-if="loading" class="status">Loading libraries…</div>
+      <div v-if="pageLoading" class="status">Loading libraries…</div>
       <div v-else-if="error" class="error">{{ error }}</div>
 
       <template v-else>
@@ -32,9 +32,9 @@
           </select>
         </div>
 
-        <div class="grid">
+        <div :class="['grid', { 'grid--loading': gridLoading }]">
           <div
-            v-for="item in filteredItems"
+            v-for="item in items"
             :key="item.id"
             class="book-card"
             @click="pick(item)"
@@ -44,6 +44,7 @@
               :src="`${absBase}/api/items/${item.id}/cover`"
               :alt="item.media.metadata.title"
               class="cover"
+              @load="e => e.target.classList.add('loaded')"
             />
             <div v-else class="cover cover-placeholder">🎵</div>
             <div class="book-info">
@@ -75,9 +76,9 @@
 </template>
 
 <script setup>
-import { ref, computed, inject, onMounted } from 'vue'
+import { ref, computed, inject, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getLibraries, getLibraryItems } from '../api/abs.js'
+import { getLibraries, getLibraryItems, searchLibraryItems } from '../api/abs.js'
 
 const router = useRouter()
 const auth = inject('auth')
@@ -86,7 +87,8 @@ const absBase = inject('ABS_BASE')
 const libraries = ref([])
 const selectedLibId = ref('')
 const items = ref([])
-const loading = ref(true)
+const pageLoading = ref(true)
+const gridLoading = ref(false)
 const error = ref('')
 const search = ref('')
 const sort = ref('progress')
@@ -96,14 +98,13 @@ const PAGE_SIZE = 40
 
 const totalPages = computed(() => Math.ceil(totalItems.value / PAGE_SIZE))
 
-const filteredItems = computed(() => {
-  if (!search.value) return items.value
-  const q = search.value.toLowerCase()
-  return items.value.filter(i => {
-    const title = i.media?.metadata?.title?.toLowerCase() || ''
-    const author = i.media?.metadata?.authorName?.toLowerCase() || ''
-    return title.includes(q) || author.includes(q)
-  })
+let searchDebounce = null
+watch(search, () => {
+  clearTimeout(searchDebounce)
+  searchDebounce = setTimeout(() => {
+    page.value = 0
+    loadResults()
+  }, 350)
 })
 
 const pickedItem = ref(null)
@@ -119,38 +120,52 @@ onMounted(async () => {
   } catch (e) {
     error.value = 'Failed to load libraries. Are you still signed in?'
   } finally {
-    loading.value = false
+    pageLoading.value = false
   }
 })
 
 async function selectLib(libId) {
   selectedLibId.value = libId
   page.value = 0
-  await loadItems()
+  await loadResults()
 }
 
-async function loadItems() {
-  loading.value = true
+async function loadResults() {
+  gridLoading.value = true
   try {
-    const desc = sort.value !== 'media.metadata.title'
-    const data = await getLibraryItems(absBase, auth.token, selectedLibId.value, page.value, sort.value, desc)
-    items.value = data.results || []
-    totalItems.value = data.total || 0
+    const q = search.value.trim()
+    if (q) {
+      items.value = await searchLibraryItems(absBase, auth.token, selectedLibId.value, q)
+      totalItems.value = 0
+    } else {
+      const desc = sort.value !== 'media.metadata.title'
+      const data = await getLibraryItems(absBase, auth.token, selectedLibId.value, page.value, sort.value, desc)
+      items.value = data.results || []
+      totalItems.value = data.total || 0
+    }
+    if (sort.value === 'media.metadata.title') {
+      items.value = [...items.value].sort((a, b) => {
+        const ta = a.media?.metadata?.title?.toLowerCase() ?? ''
+        const tb = b.media?.metadata?.title?.toLowerCase() ?? ''
+        return ta.localeCompare(tb)
+      })
+    }
   } catch (e) {
-    error.value = 'Failed to load items.'
+    error.value = 'Failed to load.'
   } finally {
-    loading.value = false
+    gridLoading.value = false
   }
 }
 
 async function changePage(p) {
   page.value = p
-  await loadItems()
+  await loadResults()
 }
 
 async function onSortChange() {
+  clearTimeout(searchDebounce)
   page.value = 0
-  await loadItems()
+  await loadResults()
 }
 
 function pick(item) {
@@ -174,7 +189,7 @@ function createRoom() {
 </script>
 
 <style scoped>
-.page { padding: 1.5rem; }
+.page { height: 100%; overflow-y: auto; padding: 1.5rem; box-sizing: border-box; }
 .picker { max-width: 900px; margin: 0 auto; }
 .picker-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
 h2 { margin: 0; }
@@ -185,10 +200,12 @@ h2 { margin: 0; }
 .toolbar { display: flex; gap: 0.75rem; margin-bottom: 1rem; }
 .search { flex: 1; padding: 0.6rem 0.75rem; border: 1px solid #0f3460; border-radius: 6px; background: #16213e; color: #fff; font-size: 1rem; }
 .sort-select { padding: 0.6rem 0.75rem; border: 1px solid #0f3460; border-radius: 6px; background: #16213e; color: #ccc; font-size: 0.85rem; cursor: pointer; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1rem; transition: opacity 0.15s; }
+.grid--loading { opacity: 0.4; pointer-events: none; }
 .book-card { background: #16213e; border-radius: 8px; overflow: hidden; cursor: pointer; transition: transform 0.15s; }
 .book-card:hover { transform: translateY(-3px); }
-.cover { width: 100%; aspect-ratio: 1; object-fit: cover; background: #0f3460; }
+.cover { width: 100%; aspect-ratio: 1; object-fit: cover; background: #0f3460; filter: blur(8px); opacity: 0; transition: filter 0.35s ease, opacity 0.35s ease; }
+.cover.loaded { filter: blur(0); opacity: 1; }
 .cover-placeholder { width: 100%; aspect-ratio: 1; background: #0f3460; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; }
 .book-info { padding: 0.5rem; }
 .book-title { font-size: 0.8rem; font-weight: 600; color: #e0e0e0; line-height: 1.3; }

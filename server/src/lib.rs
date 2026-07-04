@@ -161,6 +161,7 @@ fn proxy_path_allowed(method: &Method, path: &str) -> bool {
             "api/me",
             "api/libraries",
         ]) || path_matches_prefix_suffix(path, "api/libraries/", "/items")
+          || path_matches_prefix_suffix(path, "api/libraries/", "/search")
           || path.starts_with("api/items/")   // item detail + cover
           || path.starts_with("api/me/progress/"),
         "POST" => {

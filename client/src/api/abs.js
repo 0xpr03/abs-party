@@ -41,6 +41,14 @@ export async function getLibraryItems(_absBase, token, libraryId, page = 0, sort
   return resp.json()
 }
 
+export async function searchLibraryItems(_absBase, token, libraryId, query) {
+  const params = new URLSearchParams({ q: query, limit: 40 })
+  const resp = await fetch(`${PROXY}/api/libraries/${libraryId}/search?${params}`, { headers: authHeaders(token) })
+  if (!resp.ok) throw new Error('Search failed')
+  const data = await resp.json()
+  return (data.book || []).map(b => b.libraryItem)
+}
+
 export async function getItem(_absBase, token, itemId) {
   const resp = await fetch(`${PROXY}/api/items/${itemId}?expanded=1`, { headers: authHeaders(token) })
   if (!resp.ok) throw new Error('Failed to fetch item')
