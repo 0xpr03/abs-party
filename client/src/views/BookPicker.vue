@@ -176,9 +176,11 @@ function pick(item) {
 function createRoom() {
   const item = pickedItem.value
   const meta = item.media?.metadata || {}
+  const roomId = crypto.randomUUID().replace(/-/g, '').slice(0, 8)
   router.push({
-    path: '/room/new',
+    path: `/room/${roomId}`,
     query: {
+      host: 'true',
       itemId: item.id,
       libraryId: selectedLibId.value,
       title: meta.title || 'Untitled',

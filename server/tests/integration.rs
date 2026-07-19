@@ -112,6 +112,7 @@ async fn websocket_create_and_join_room() {
         .send(Message::Text(
             serde_json::json!({
                 "type": "create_room",
+                "room_id": "abcd1234",
                 "abs_token": "alice",
                 "item_id": "item1",
                 "item_title": "Test Book",
@@ -128,7 +129,7 @@ async fn websocket_create_and_join_room() {
     let state: serde_json::Value = serde_json::from_str(&state_msg.into_text().unwrap()).unwrap();
     assert_eq!(state["type"], "room_state");
     let room_id = state["room_id"].as_str().unwrap().to_string();
-    assert_eq!(room_id.len(), 8);
+    assert_eq!(room_id, "abcd1234");
     assert_eq!(state["item"]["title"], "Test Book");
 
     // Guest joins the room
@@ -172,7 +173,7 @@ async fn websocket_play_command_relayed_to_guest() {
         .unwrap();
     host_ws
         .send(Message::Text(
-            serde_json::json!({"type":"create_room","abs_token":"alice","item_id":"i","item_title":"B","item_author":"A","library_id":"l"})
+            serde_json::json!({"type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":"i","item_title":"B","item_author":"A","library_id":"l"})
             .to_string().into(),
         ))
         .await

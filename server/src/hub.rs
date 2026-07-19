@@ -12,15 +12,32 @@ pub fn new_room_map() -> RoomMap {
     Arc::new(DashMap::new())
 }
 
+fn validate_room_id(id: &str) -> Result<(), String> {
+    if id.len() != 8 {
+        return Err("Room ID must be exactly 8 characters".into());
+    }
+    if !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Room ID may only contain letters and digits".into());
+    }
+    Ok(())
+}
+
+/// Create a new room with the given ID, or join the existing room if the ID is already in use.
+/// Returns Ok(true) if a new room was created, Ok(false) if joined an existing room.
 pub async fn create_room(
     rooms: &RoomMap,
+    room_id: String,
     item: ItemInfo,
     host: Participant,
-) -> String {
-    let room_id = Uuid::new_v4().to_string()[..8].to_string();
+) -> Result<bool, String> {
+    validate_room_id(&room_id)?;
+    if rooms.contains_key(&room_id) {
+        join_room(rooms, &room_id, host).await?;
+        return Ok(false);
+    }
     let room = Room::new(room_id.clone(), item, host);
-    rooms.insert(room_id.clone(), Arc::new(Mutex::new(room)));
-    room_id
+    rooms.insert(room_id, Arc::new(Mutex::new(room)));
+    Ok(true)
 }
 
 pub async fn join_room(
@@ -28,9 +45,10 @@ pub async fn join_room(
     room_id: &str,
     participant: Participant,
 ) -> Result<(), String> {
+    validate_room_id(room_id)?;
     let arc = rooms
         .get(room_id)
-        .ok_or_else(|| "Room not found".to_string())?
+        .ok_or_else(|| "Room not found — the host hasn't opened the room yet".to_string())?
         .clone();
 
     let mut room = arc.lock().await;
@@ -148,23 +166,68 @@ mod tests {
     use crate::models::ServerMessage;
     use crate::room::test_helpers::{make_item, make_participant};
 
+    #[test]
+    fn validate_room_id_rejects_short() {
+        assert!(validate_room_id("abc").is_err());
+    }
+
+    #[test]
+    fn validate_room_id_rejects_long() {
+        assert!(validate_room_id("abcdefghi").is_err());
+    }
+
+    #[test]
+    fn validate_room_id_rejects_invalid_chars() {
+        assert!(validate_room_id("abcd!@#$").is_err());
+        assert!(validate_room_id("abcd efgh").is_err());
+    }
+
+    #[test]
+    fn validate_room_id_accepts_valid() {
+        assert!(validate_room_id("abcd1234").is_ok());
+        assert!(validate_room_id("ABCD1234").is_ok());
+        assert!(validate_room_id("AbCd1234").is_ok());
+    }
+
     #[tokio::test]
     async fn create_room_inserts_into_map() {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
-        let room_id = create_room(&rooms, make_item(), host).await;
-        assert!(rooms.contains_key(&room_id));
-        assert_eq!(room_id.len(), 8);
+        let created = create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
+        assert!(created); // new room
+        assert!(rooms.contains_key("testroom"));
+    }
+
+    #[tokio::test]
+    async fn create_room_joins_existing_room() {
+        let rooms = new_room_map();
+        let (host, _host_rx) = make_participant("Alice");
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
+
+        let (guest, mut guest_rx) = make_participant("Bob");
+        let joined = create_room(&rooms, "testroom".into(), make_item(), guest).await.unwrap();
+        assert!(!joined); // joined existing
+        // join_room sends room_state to the newcomer
+        let msg = guest_rx.recv().await.unwrap();
+        assert!(matches!(msg, ServerMessage::RoomState { .. }));
+    }
+
+    #[tokio::test]
+    async fn create_room_rejects_invalid_id() {
+        let rooms = new_room_map();
+        let (host, _rx) = make_participant("Alice");
+        let result = create_room(&rooms, "bad!id".into(), make_item(), host).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn join_room_sends_state_to_newcomer() {
         let rooms = new_room_map();
         let (host, _host_rx) = make_participant("Alice");
-        let room_id = create_room(&rooms, make_item(), host).await;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
 
         let (guest, mut guest_rx) = make_participant("Bob");
-        join_room(&rooms, &room_id, guest).await.unwrap();
+        join_room(&rooms, "testroom", guest).await.unwrap();
 
         let msg = guest_rx.recv().await.unwrap();
         assert!(matches!(msg, ServerMessage::RoomState { .. }));
@@ -174,10 +237,10 @@ mod tests {
     async fn join_room_notifies_existing_participants() {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
-        let room_id = create_room(&rooms, make_item(), host).await;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
 
         let (guest, _guest_rx) = make_participant("Bob");
-        join_room(&rooms, &room_id, guest).await.unwrap();
+        join_room(&rooms, "testroom", guest).await.unwrap();
 
         let msg = host_rx.recv().await.unwrap();
         assert!(matches!(msg, ServerMessage::ParticipantJoined { name } if name == "Bob"));
@@ -187,7 +250,15 @@ mod tests {
     async fn join_nonexistent_room_returns_error() {
         let rooms = new_room_map();
         let (guest, _rx) = make_participant("Bob");
-        let result = join_room(&rooms, "nope", guest).await;
+        let result = join_room(&rooms, "nonexst", guest).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn join_room_rejects_invalid_id() {
+        let rooms = new_room_map();
+        let (guest, _rx) = make_participant("Bob");
+        let result = join_room(&rooms, "bad!", guest).await;
         assert!(result.is_err());
     }
 
@@ -196,7 +267,8 @@ mod tests {
         let rooms = new_room_map();
         let (host, _host_rx) = make_participant("Alice");
         let host_id = host.id;
-        let room_id = create_room(&rooms, make_item(), host).await;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
+        let room_id = "testroom";
 
         let (guest, mut guest_rx) = make_participant("Bob");
         join_room(&rooms, &room_id, guest).await.unwrap();
@@ -212,15 +284,16 @@ mod tests {
     async fn guest_can_send_play() {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
-        let room_id = create_room(&rooms, make_item(), host).await;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
+        let room_id = "testroom";
 
         let (guest, mut guest_rx) = make_participant("Bob");
         let guest_id = guest.id;
-        join_room(&rooms, &room_id, guest).await.unwrap();
+        join_room(&rooms, room_id, guest).await.unwrap();
         let _ = host_rx.recv().await; // drain joined notification
         let _ = guest_rx.recv().await; // drain room_state
 
-        handle_play(&rooms, &room_id, guest_id, 50.0).await;
+        handle_play(&rooms, room_id, guest_id, 50.0).await;
 
         // Host SHOULD receive a play command from guest
         assert!(matches!(host_rx.try_recv(), Ok(ServerMessage::Play { .. })));
@@ -231,25 +304,26 @@ mod tests {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
         let host_id = host.id;
-        let room_id = create_room(&rooms, make_item(), host).await;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
 
-        leave_room(&rooms, &room_id, host_id).await;
+        leave_room(&rooms, "testroom", host_id).await;
 
-        assert!(!rooms.contains_key(&room_id));
+        assert!(!rooms.contains_key("testroom"));
     }
 
     #[tokio::test]
     async fn leave_room_notifies_remaining() {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
-        let room_id = create_room(&rooms, make_item(), host).await;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
+        let room_id = "testroom";
 
         let (guest, _guest_rx) = make_participant("Bob");
         let guest_id = guest.id;
-        join_room(&rooms, &room_id, guest).await.unwrap();
+        join_room(&rooms, room_id, guest).await.unwrap();
         let _ = host_rx.recv().await; // drain joined notification
 
-        leave_room(&rooms, &room_id, guest_id).await;
+        leave_room(&rooms, room_id, guest_id).await;
 
         let msg = host_rx.recv().await.unwrap();
         assert!(matches!(msg, ServerMessage::ParticipantLeft { name } if name == "Bob"));

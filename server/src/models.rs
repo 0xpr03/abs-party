@@ -10,6 +10,7 @@ pub enum ClientMessage {
         abs_token: String,
     },
     CreateRoom {
+        room_id: String,
         abs_token: String,
         item_id: String,
         item_title: String,
@@ -134,7 +135,7 @@ mod tests {
 
     #[test]
     fn client_message_create_room_deserializes() {
-        let json = r#"{"type":"create_room","abs_token":"t","item_id":"i1","item_title":"Book","item_author":"Auth","library_id":"l1"}"#;
+        let json = r#"{"type":"create_room","room_id":"abcd1234","abs_token":"t","item_id":"i1","item_title":"Book","item_author":"Auth","library_id":"l1"}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
         assert!(matches!(msg, ClientMessage::CreateRoom { .. }));
     }

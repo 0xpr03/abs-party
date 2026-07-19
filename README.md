@@ -7,7 +7,7 @@ Each listener streams audio directly from their own Audiobookshelf account and t
 
 ## How it works
 
-Users authenticate with their Audiobookshelf credentials (username/password or API key). The host creates a room and picks a book. Guests join by room code. The host's playback controls are broadcast over WebSocket to all participants, who each have their own ABS playback session open.
+Users authenticate with their Audiobookshelf credentials (username/password or API key). The host creates a room and picks a book from a searchable library browser. Guests join by room code. The host's playback controls are broadcast over WebSocket to all participants, who each have their own ABS playback session open.
 
 Before joining, each participant's current position is saved as an ABS bookmark (`pre_party_<datetime>`), so they can return to exactly where they were if the session moves their progress.
 
@@ -19,6 +19,17 @@ Rooms are in-memory and ephemeral -- they disappear when the last participant le
 - Backend: Rust (axum 0.7, tokio), single binary
 - Frontend: Vue 3 + Vite SPA, served as static files from the same binary
 - No database
+
+
+## Book picker
+
+When creating a room the host browses their ABS library. The picker supports:
+
+- **Sort** by last listened, title (A–Z), or date added
+- **Search** by title or author — uses the ABS server-side search API so results are not limited to the first page of items
+- **Pagination** for browsed (non-search) results
+
+Switching sort mode and typing in the search box are coordinated: the active sort applies to search results, and changing the sort re-runs the current search query.
 
 
 ## Security notes

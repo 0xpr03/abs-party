@@ -70,7 +70,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
 
-            ClientMessage::CreateRoom { abs_token, item_id, item_title, item_author, library_id } => {
+            ClientMessage::CreateRoom { room_id, abs_token, item_id, item_title, item_author, library_id } => {
                 let me = match validate_token(&state.abs, &abs_token, state.config.bypass_auth).await {
                     Ok(m) => m,
                     Err(e) => { let _ = tx.send(ServerMessage::Error { message: e }); continue; }
@@ -79,12 +79,22 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let item = ItemInfo { id: item_id, library_id, title: item_title, author: item_author };
                 let participant = Participant { id: participant_id, name: me.username.clone(), abs_token, abs_username: me.username, tx: tx.clone() };
 
-                let room_id = hub::create_room(&state.rooms, item, participant).await;
-                current_room = Some(room_id.clone());
-
-                if let Some(arc) = state.rooms.get(&room_id).map(|r| r.clone()) {
-                    let room = arc.lock().await;
-                    let _ = tx.send(room.state_message());
+                match hub::create_room(&state.rooms, room_id.clone(), item, participant).await {
+                    Ok(true) => {
+                        // New room created — send initial room_state
+                        current_room = Some(room_id.clone());
+                        if let Some(arc) = state.rooms.get(&room_id).map(|r| r.clone()) {
+                            let room = arc.lock().await;
+                            let _ = tx.send(room.state_message());
+                        }
+                    }
+                    Ok(false) => {
+                        // Joined existing room — join_room already sent room_state
+                        current_room = Some(room_id);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(ServerMessage::Error { message: e });
+                    }
                 }
             }
 

@@ -147,7 +147,7 @@ const auth = inject('auth')
 const absBase = inject('ABS_BASE')
 
 const roomId = ref(route.params.id)
-const isNewRoom = roomId.value === 'new'
+const isHostMode = route.query.host === 'true'  // constant: this tab intends to act as room creator
 const displayName = computed(() => auth.username)
 
 const fatalError = ref('')
@@ -157,11 +157,10 @@ const participants = ref([])
 const bookmarks = ref([])
 const newBookmarkTitle = ref('')
 const roomState = reactive({ item: null, position: 0, playing: false, speed: 1 })
-const isHost = ref(isNewRoom)
+const isHost = ref(isHostMode)
 const speed = ref(1)
 const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
-const isCreator = isNewRoom   // constant: true if this tab created the room
 let hasConnectedOnce = false
 
 const player = useAbsPlayer(absBase)
@@ -196,6 +195,11 @@ onMounted(async () => {
     return
   }
 
+  if (isHostMode && !route.query.itemId) {
+    fatalError.value = 'No book selected. Please go back and pick a book from the library first.'
+    return
+  }
+
   connect()
 
   // Wait for WS to connect, then send join/create
@@ -213,9 +217,10 @@ onMounted(async () => {
     return
   }
 
-  if (isNewRoom) {
+  if (isHostMode) {
     send({
       type: 'create_room',
+      room_id: roomId.value,
       abs_token: auth.token,
       item_id: route.query.itemId,
       item_title: route.query.title,
@@ -242,8 +247,6 @@ async function handleMessage(msg) {
     const me = participants.value.find(p => p.name === displayName.value)
     isHost.value = me?.is_host ?? false
 
-    if (isNewRoom) roomId.value = msg.room_id
-
     // Now open the player (saves bookmark, creates ABS session)
     if (preparing.value && auth.token && roomState.item?.id) {
       preparing.value = false
@@ -252,7 +255,7 @@ async function handleMessage(msg) {
         bookmarkSaved.value = true
         setTimeout(() => { bookmarkSaved.value = false }, 5000)
         await loadBookmarks()
-        if (isNewRoom) {
+        if (isHostMode) {
           // Host: start from their own last ABS position and publish it so guests sync correctly
           const startPos = Math.max(0, session.currentTime ?? 0)
           player.seekTo(startPos)
@@ -268,7 +271,7 @@ async function handleMessage(msg) {
       }
     } else {
       // Reconnect: player already open — resync state
-      if (isCreator) {
+      if (isHostMode) {
         const pos = player.currentTime.value
         send({ type: 'seek', position: pos })
       } else {
@@ -312,16 +315,17 @@ async function handleMessage(msg) {
 }
 
 function rejoinRoom() {
-  if (isCreator && roomState.item?.id) {
+  if (isHostMode && roomState.item?.id) {
     send({
       type: 'create_room',
+      room_id: roomId.value,
       abs_token: auth.token,
       item_id: roomState.item.id,
       item_title: roomState.item.title,
       item_author: roomState.item.author,
       library_id: roomState.item.library_id,
     })
-  } else if (roomId.value && roomId.value !== 'new') {
+  } else if (roomId.value) {
     send({ type: 'join', room_id: roomId.value, abs_token: auth.token })
   }
 }
