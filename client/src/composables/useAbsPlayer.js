@@ -10,6 +10,10 @@ export function useAbsPlayer(absBase) {
   const currentTime = ref(0)
   const duration = ref(0)
   const isPlaying = ref(false)
+  const saved = parseFloat(localStorage.getItem('absPartyVolume'))
+  if (isFinite(saved) && saved >= 0 && saved <= 1) {
+    audio.volume = saved
+  }
   const volume = ref(audio.volume)
 
   let hls = null
@@ -163,6 +167,7 @@ export function useAbsPlayer(absBase) {
   function setVolume(v) {
     audio.volume = v
     volume.value = v
+    localStorage.setItem('absPartyVolume', v)
   }
 
   function startSyncTimer() {

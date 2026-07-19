@@ -114,9 +114,6 @@ pub async fn handle_seek(rooms: &RoomMap, room_id: &str, sender_id: Uuid, positi
     if !position.is_finite() || position < 0.0 { return; }
     if let Some(arc) = rooms.get(room_id).map(|r| r.clone()) {
         let mut room = arc.lock().await;
-        if !room.is_host(sender_id) {
-            return;
-        }
         let sender_name = room.participants.iter()
             .find(|p| p.id == sender_id)
             .map(|p| p.name.clone())

@@ -24,25 +24,27 @@ const props = defineProps({
 const router = useRouter()
 
 const auth = reactive({
-  token: sessionStorage.getItem('abs_token') || '',
-  username: sessionStorage.getItem('abs_username') || '',
-  userId: sessionStorage.getItem('abs_user_id') || '',
+  token: localStorage.getItem('abs_token') || '',
+  username: localStorage.getItem('abs_username') || '',
+  userId: localStorage.getItem('abs_user_id') || '',
 })
 
 function setAuth(token, username, userId) {
   auth.token = token
   auth.username = username
   auth.userId = userId
-  sessionStorage.setItem('abs_token', token)
-  sessionStorage.setItem('abs_username', username)
-  sessionStorage.setItem('abs_user_id', userId)
+  localStorage.setItem('abs_token', token)
+  localStorage.setItem('abs_username', username)
+  localStorage.setItem('abs_user_id', userId)
 }
 
 function logout() {
   auth.token = ''
   auth.username = ''
   auth.userId = ''
-  sessionStorage.clear()
+  localStorage.removeItem('abs_token')
+  localStorage.removeItem('abs_username')
+  localStorage.removeItem('abs_user_id')
   router.push('/')
 }
 

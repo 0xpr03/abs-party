@@ -50,27 +50,20 @@
                 :max="player.duration.value || 1"
                 step="1"
                 @input="onSeek"
-                :disabled="!isHost"
               />
               <span class="time">{{ fmt(player.duration.value) }}</span>
             </div>
 
             <!-- Controls -->
             <div class="controls">
-              <button class="ctrl-btn" @click="skip(-10)" :disabled="!isHost">-10s</button>
+              <button class="ctrl-btn" @click="skip(-10)">-10s</button>
               <button class="ctrl-btn play-btn" @click="togglePlay">
                 {{ player.isPlaying.value ? '⏸' : '▶' }}
               </button>
-              <button class="ctrl-btn" @click="skip(10)" :disabled="!isHost">+10s</button>
+              <button class="ctrl-btn" @click="skip(10)">+10s</button>
             </div>
 
-            <!-- Speed -->
-            <div class="speed-row">
-              <label>Speed
-                <select v-model="speed" @change="onSpeedChange" :disabled="!isHost">
-                  <option v-for="s in speeds" :key="s" :value="s">{{ s }}×</option>
-                </select>
-              </label>
+            <div class="volume-row">
               <label class="volume-label">Vol
                 <input
                   type="range"
@@ -81,8 +74,6 @@
                 />
               </label>
             </div>
-
-            <p v-if="!isHost" class="guest-notice">Only the host can seek or change speed.</p>
           </div>
         </div>
 
@@ -109,8 +100,7 @@
           </div>
           <ul class="bookmark-list">
             <li v-for="b in bookmarks" :key="b.time"
-                class="bookmark-item"
-                :class="{ 'bookmark-seekable': isHost }"
+                class="bookmark-item bookmark-seekable"
                 @click="seekToBookmark(b)">
               <span class="bookmark-title">{{ b.title }}</span>
               <span class="bookmark-time">{{ fmt(b.time) }}</span>
@@ -158,8 +148,6 @@ const bookmarks = ref([])
 const newBookmarkTitle = ref('')
 const roomState = reactive({ item: null, position: 0, playing: false, speed: 1 })
 const isHost = ref(isHostMode)
-const speed = ref(1)
-const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
 let hasConnectedOnce = false
 
@@ -264,7 +252,6 @@ async function handleMessage(msg) {
           // Guest: follow the room's canonical position
           player.seekTo(roomState.position)
           if (roomState.playing) player.play()
-          player.setSpeed(roomState.speed)
         }
       } catch (e) {
         fatalError.value = 'Failed to open playback session: ' + e.message
@@ -278,7 +265,6 @@ async function handleMessage(msg) {
         player.seekTo(roomState.position)
         if (roomState.playing) player.play()
         else player.pause()
-        player.setSpeed(roomState.speed)
       }
     }
     return
@@ -309,7 +295,6 @@ async function handleMessage(msg) {
   if (msg.type === 'play')  addEvent(`${msg.sender_name} resumed playback`, 'normal')
   if (msg.type === 'pause') addEvent(`${msg.sender_name} paused playback`, 'normal')
   if (msg.type === 'seek')  addEvent(`${msg.sender_name} seeked to ${fmt(msg.position)}`, 'normal')
-  if (msg.type === 'speed') addEvent(`${msg.sender_name} changed speed to ${msg.rate}×`, 'normal')
 
   applySyncMsg(msg)
 }
@@ -344,7 +329,6 @@ function togglePlay() {
 }
 
 function onSeek(evt) {
-  if (!isHost.value) return
   const pos = Number(evt.target.value)
   player.seekTo(pos)
   send({ type: 'seek', position: pos })
@@ -352,7 +336,6 @@ function onSeek(evt) {
 }
 
 function skip(seconds) {
-  if (!isHost.value) return
   const pos = Math.max(0, player.currentTime.value + seconds)
   player.seekTo(pos)
   send({ type: 'seek', position: pos })
@@ -360,17 +343,9 @@ function skip(seconds) {
 }
 
 function seekToBookmark(b) {
-  if (!isHost.value) return
   player.seekTo(b.time)
   send({ type: 'seek', position: b.time })
   addEvent(`You seeked to ${fmt(b.time)}`, 'normal')
-}
-
-function onSpeedChange() {
-  if (!isHost.value) return
-  player.setSpeed(speed.value)
-  send({ type: 'speed', rate: speed.value })
-  addEvent(`You changed speed to ${speed.value}×`, 'normal')
 }
 
 async function loadBookmarks() {
@@ -446,12 +421,9 @@ function fmt(s) {
 .ctrl-btn:disabled { opacity: 0.4; cursor: default; }
 .play-btn { font-size: 1.5rem; padding: 0.75rem 1.5rem; background: #6c5ce7; border-color: #6c5ce7; color: #fff; border-radius: 50%; width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; }
 
-.speed-row { display: flex; align-items: center; gap: 1.5rem; }
-.speed-row label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #aaa; }
-.speed-row select { background: #16213e; border: 1px solid #0f3460; color: #ccc; padding: 0.3rem 0.6rem; border-radius: 6px; }
-.volume-label { white-space: nowrap; }
+.volume-row { display: flex; align-items: center; justify-content: center; }
+.volume-label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #aaa; white-space: nowrap; }
 .volume-slider { width: 90px; accent-color: #6c5ce7; cursor: pointer; }
-.guest-notice { color: #888; font-size: 0.8rem; text-align: center; }
 
 .sidebar h3 { margin: 0 0 0.75rem; font-size: 0.9rem; color: #aaa; }
 .sidebar-divider { border: none; border-top: 1px solid #0f3460; margin: 1rem 0; }
