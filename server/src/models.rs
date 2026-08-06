@@ -17,9 +17,10 @@ pub enum ClientMessage {
         item_author: String,
         library_id: String,
     },
-    Play {
+    PlayIntent {
         position: f64,
     },
+    Ready,
     Pause {
         position: f64,
     },
@@ -61,6 +62,10 @@ pub enum ServerMessage {
     },
     Speed {
         rate: f64,
+        sender_name: String,
+    },
+    PlayIntent {
+        position: f64,
         sender_name: String,
     },
     Sync {

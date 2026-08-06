@@ -165,7 +165,7 @@ async fn websocket_create_and_join_room() {
 }
 
 #[tokio::test]
-async fn websocket_play_command_relayed_to_guest() {
+async fn websocket_play_intent_and_ready_triggers_play() {
     let addr = spawn_test_server().await;
 
     let (mut host_ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
@@ -196,30 +196,39 @@ async fn websocket_play_command_relayed_to_guest() {
     let _ = guest_ws.next().await; // drain room_state
     let _ = host_ws.next().await; // drain participant_joined
 
-    // Host sends play
+    // Host sends play_intent
     host_ws
         .send(Message::Text(
-            serde_json::json!({"type":"play","position":75.5}).to_string().into(),
+            serde_json::json!({"type":"play_intent","position":75.5}).to_string().into(),
         ))
         .await
         .unwrap();
 
-    // Guest should receive play
-    let play_msg: serde_json::Value =
-        serde_json::from_str(&guest_ws.next().await.unwrap().unwrap().into_text().unwrap())
-            .unwrap();
-    assert_eq!(play_msg["type"], "play");
-    assert!((play_msg["position"].as_f64().unwrap() - 75.5).abs() < f64::EPSILON);
+    // Both host and guest receive play_intent
+    let host_intent: serde_json::Value =
+        serde_json::from_str(&host_ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+    assert_eq!(host_intent["type"], "play_intent");
+    let guest_intent: serde_json::Value =
+        serde_json::from_str(&guest_ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+    assert_eq!(guest_intent["type"], "play_intent");
+    assert!((guest_intent["position"].as_f64().unwrap() - 75.5).abs() < f64::EPSILON);
 
-    // Host should NOT receive its own play back — give a short window
-    tokio::select! {
-        msg = host_ws.next() => {
-            if let Some(Ok(m)) = msg {
-                let json: serde_json::Value = serde_json::from_str(&m.into_text().unwrap()).unwrap();
-                // The only acceptable unsolicited message for the host here would be nothing
-                panic!("host unexpectedly received: {json}");
-            }
-        }
-        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
-    }
+    // Both send ready
+    host_ws
+        .send(Message::Text(serde_json::json!({"type":"ready"}).to_string().into()))
+        .await
+        .unwrap();
+    guest_ws
+        .send(Message::Text(serde_json::json!({"type":"ready"}).to_string().into()))
+        .await
+        .unwrap();
+
+    // Both should receive play
+    let host_play: serde_json::Value =
+        serde_json::from_str(&host_ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+    assert_eq!(host_play["type"], "play");
+    let guest_play: serde_json::Value =
+        serde_json::from_str(&guest_ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+    assert_eq!(guest_play["type"], "play");
+    assert!((guest_play["position"].as_f64().unwrap() - 75.5).abs() < f64::EPSILON);
 }

@@ -1,10 +1,12 @@
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::models::{ItemInfo, ServerMessage};
-use crate::room::{now_millis, Participant, Room};
+use crate::room::{now_millis, Participant, ReadyCheck, Room};
 
 pub type RoomMap = Arc<DashMap<String, Arc<Mutex<Room>>>>;
 
@@ -62,6 +64,24 @@ pub async fn join_room(
         return Err("Username taken".into());
     }
 
+    // Auto-pause on join so all parties re-sync before resuming
+    if room.playing {
+        let pos = room.estimated_position();
+        room.pause_now();
+        room.broadcast(&ServerMessage::Pause {
+            position: pos,
+            sender_name: format!("{} joined", name),
+        });
+    } else if room.ready_check.is_some() {
+        // Cancel any pending ready-check; broadcast Pause so clients clear buffering state
+        let pos = room.ready_check.as_ref().unwrap().position;
+        room.ready_check = None;
+        room.broadcast(&ServerMessage::Pause {
+            position: pos,
+            sender_name: format!("{} joined", name),
+        });
+    }
+
     // Push the newcomer first so room_state includes them in the participant list
     room.participants.push(participant);
 
@@ -76,7 +96,7 @@ pub async fn join_room(
     Ok(())
 }
 
-pub async fn handle_play(rooms: &RoomMap, room_id: &str, sender_id: Uuid, position: f64) {
+pub async fn handle_play_intent(rooms: &RoomMap, room_id: &str, sender_id: Uuid, position: f64) {
     if !position.is_finite() || position < 0.0 { return; }
     if let Some(arc) = rooms.get(room_id).map(|r| r.clone()) {
         let mut room = arc.lock().await;
@@ -84,14 +104,37 @@ pub async fn handle_play(rooms: &RoomMap, room_id: &str, sender_id: Uuid, positi
             .find(|p| p.id == sender_id)
             .map(|p| p.name.clone())
             .unwrap_or_default();
+        room.pause_now();
         room.position = position;
-        room.playing = true;
-        let msg = ServerMessage::Play {
-            position,
-            host_time: now_millis(),
-            sender_name,
+        let expected: HashSet<Uuid> = room.participants.iter().map(|p| p.id).collect();
+        room.ready_check = Some(ReadyCheck { position, expected, ready: HashSet::new() });
+        // Broadcast to ALL participants (including sender) so everyone starts buffering
+        room.broadcast(&ServerMessage::PlayIntent { position, sender_name });
+    }
+}
+
+pub async fn handle_ready(rooms: &RoomMap, room_id: &str, sender_id: Uuid) {
+    if let Some(arc) = rooms.get(room_id).map(|r| r.clone()) {
+        let mut room = arc.lock().await;
+        let fire_play = if room.ready_check.is_some() {
+            let check = room.ready_check.as_mut().unwrap();
+            check.ready.insert(sender_id);
+            check.expected.is_subset(&check.ready)
+        } else {
+            false
         };
-        room.broadcast_except(sender_id, &msg);
+        if fire_play {
+            let pos = room.ready_check.as_ref().unwrap().position;
+            room.ready_check = None;
+            room.playing = true;
+            room.position = pos;
+            room.play_started_at = Some(Instant::now());
+            room.broadcast(&ServerMessage::Play {
+                position: pos,
+                host_time: now_millis(),
+                sender_name: String::new(),
+            });
+        }
     }
 }
 
@@ -105,6 +148,8 @@ pub async fn handle_pause(rooms: &RoomMap, room_id: &str, sender_id: Uuid, posit
             .unwrap_or_default();
         room.position = position;
         room.playing = false;
+        room.play_started_at = None;
+        room.ready_check = None;
         let msg = ServerMessage::Pause { position, sender_name };
         room.broadcast_except(sender_id, &msg);
     }
@@ -119,6 +164,8 @@ pub async fn handle_seek(rooms: &RoomMap, room_id: &str, sender_id: Uuid, positi
             .map(|p| p.name.clone())
             .unwrap_or_default();
         room.position = position;
+        room.play_started_at = None;
+        room.ready_check = None;
         let msg = ServerMessage::Seek { position, sender_name };
         room.broadcast_except(sender_id, &msg);
     }
@@ -145,7 +192,36 @@ pub async fn leave_room(rooms: &RoomMap, room_id: &str, participant_id: Uuid) {
     let should_remove = if let Some(arc) = rooms.get(room_id).map(|r| r.clone()) {
         let mut room = arc.lock().await;
         if let Some(name) = room.remove_participant(participant_id) {
-            room.broadcast(&ServerMessage::ParticipantLeft { name });
+            room.broadcast(&ServerMessage::ParticipantLeft { name: name.clone() });
+
+            if !room.is_empty() {
+                if room.playing {
+                    let pos = room.estimated_position();
+                    room.pause_now();
+                    room.broadcast(&ServerMessage::Pause {
+                        position: pos,
+                        sender_name: format!("{} left", name),
+                    });
+                } else if room.ready_check.is_some() {
+                    let fire_play = {
+                        let check = room.ready_check.as_mut().unwrap();
+                        check.expected.remove(&participant_id);
+                        check.expected.is_subset(&check.ready)
+                    };
+                    if fire_play {
+                        let pos = room.ready_check.as_ref().unwrap().position;
+                        room.ready_check = None;
+                        room.playing = true;
+                        room.position = pos;
+                        room.play_started_at = Some(Instant::now());
+                        room.broadcast(&ServerMessage::Play {
+                            position: pos,
+                            host_time: now_millis(),
+                            sender_name: String::new(),
+                        });
+                    }
+                }
+            }
         }
         room.is_empty()
     } else {
@@ -260,40 +336,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_play_broadcasts_to_others() {
-        let rooms = new_room_map();
-        let (host, _host_rx) = make_participant("Alice");
-        let host_id = host.id;
-        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
-        let room_id = "testroom";
-
-        let (guest, mut guest_rx) = make_participant("Bob");
-        join_room(&rooms, &room_id, guest).await.unwrap();
-        let _ = guest_rx.recv().await; // drain room_state
-
-        handle_play(&rooms, &room_id, host_id, 100.0).await;
-
-        let msg = guest_rx.recv().await.unwrap();
-        assert!(matches!(msg, ServerMessage::Play { position, .. } if (position - 100.0).abs() < f64::EPSILON));
-    }
-
-    #[tokio::test]
-    async fn guest_can_send_play() {
+    async fn play_intent_broadcasts_to_all_and_ready_fires_play() {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
+        let host_id = host.id;
         create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
         let room_id = "testroom";
 
         let (guest, mut guest_rx) = make_participant("Bob");
         let guest_id = guest.id;
         join_room(&rooms, room_id, guest).await.unwrap();
-        let _ = host_rx.recv().await; // drain joined notification
+        // Room was not playing, so join only sends ParticipantJoined to host
+        let _ = host_rx.recv().await; // drain ParticipantJoined
         let _ = guest_rx.recv().await; // drain room_state
 
-        handle_play(&rooms, room_id, guest_id, 50.0).await;
+        handle_play_intent(&rooms, room_id, host_id, 100.0).await;
 
-        // Host SHOULD receive a play command from guest
-        assert!(matches!(host_rx.try_recv(), Ok(ServerMessage::Play { .. })));
+        // Both should receive PlayIntent (broadcast to all)
+        let h_msg = host_rx.recv().await.unwrap();
+        let g_msg = guest_rx.recv().await.unwrap();
+        assert!(matches!(h_msg, ServerMessage::PlayIntent { position, .. } if (position - 100.0).abs() < f64::EPSILON));
+        assert!(matches!(g_msg, ServerMessage::PlayIntent { .. }));
+
+        // Host sends Ready — not all ready yet (guest hasn't)
+        handle_ready(&rooms, room_id, host_id).await;
+        assert!(host_rx.try_recv().is_err());
+        assert!(guest_rx.try_recv().is_err());
+
+        // Guest sends Ready — now all ready, Play fires to everyone
+        handle_ready(&rooms, room_id, guest_id).await;
+        let h_play = host_rx.recv().await.unwrap();
+        let g_play = guest_rx.recv().await.unwrap();
+        assert!(matches!(h_play, ServerMessage::Play { position, .. } if (position - 100.0).abs() < f64::EPSILON));
+        assert!(matches!(g_play, ServerMessage::Play { .. }));
+    }
+
+    #[tokio::test]
+    async fn guest_can_send_play_intent() {
+        let rooms = new_room_map();
+        let (host, mut host_rx) = make_participant("Alice");
+        let host_id = host.id;
+        create_room(&rooms, "testroom".into(), make_item(), host).await.unwrap();
+        let room_id = "testroom";
+
+        let (guest, mut guest_rx) = make_participant("Bob");
+        let guest_id = guest.id;
+        join_room(&rooms, room_id, guest).await.unwrap();
+        let _ = host_rx.recv().await; // drain ParticipantJoined
+        let _ = guest_rx.recv().await; // drain room_state
+
+        handle_play_intent(&rooms, room_id, guest_id, 50.0).await;
+
+        // Both receive PlayIntent
+        assert!(matches!(guest_rx.recv().await.unwrap(), ServerMessage::PlayIntent { .. }));
+        assert!(matches!(host_rx.recv().await.unwrap(), ServerMessage::PlayIntent { .. }));
+
+        // Both send Ready → all ready → Play fires to both
+        handle_ready(&rooms, room_id, guest_id).await;
+        handle_ready(&rooms, room_id, host_id).await;
+
+        assert!(matches!(guest_rx.recv().await.unwrap(), ServerMessage::Play { .. }));
+        assert!(matches!(host_rx.recv().await.unwrap(), ServerMessage::Play { .. }));
     }
 
     #[tokio::test]

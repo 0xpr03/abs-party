@@ -1,4 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashSet;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -12,6 +13,12 @@ pub struct Participant {
     pub tx: mpsc::UnboundedSender<ServerMessage>,
 }
 
+pub struct ReadyCheck {
+    pub position: f64,
+    pub expected: HashSet<Uuid>,
+    pub ready: HashSet<Uuid>,
+}
+
 pub struct Room {
     pub id: String,
     pub item: ItemInfo,
@@ -20,6 +27,8 @@ pub struct Room {
     pub speed: f64,
     pub host_id: Uuid,
     pub participants: Vec<Participant>,
+    pub play_started_at: Option<Instant>,
+    pub ready_check: Option<ReadyCheck>,
 }
 
 impl Room {
@@ -32,7 +41,23 @@ impl Room {
             speed: 1.0,
             host_id: host.id,
             participants: vec![host],
+            play_started_at: None,
+            ready_check: None,
         }
+    }
+
+    pub fn estimated_position(&self) -> f64 {
+        match self.play_started_at {
+            Some(t) => self.position + t.elapsed().as_secs_f64() * self.speed,
+            None => self.position,
+        }
+    }
+
+    pub fn pause_now(&mut self) {
+        self.position = self.estimated_position();
+        self.playing = false;
+        self.play_started_at = None;
+        self.ready_check = None;
     }
 
     pub fn participant_infos(&self) -> Vec<ParticipantInfo> {
@@ -96,7 +121,7 @@ impl Room {
         ServerMessage::RoomState {
             room_id: self.id.clone(),
             item: self.item.clone(),
-            position: self.position,
+            position: self.estimated_position(),
             playing: self.playing,
             speed: self.speed,
             participants: self.participant_infos(),

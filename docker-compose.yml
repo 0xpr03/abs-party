@@ -4,7 +4,7 @@ services:
     ports:
       - "3456:3456"
     environment:
-      - ABS_BASE_URL=${ABS_BASE_URL:-https://some.domain}
+      - ABS_BASE_URL=${ABS_BASE_URL:-https://audio.proctet.net}
       - BIND=0.0.0.0:3456
       - RUST_LOG=abs_party=info
     restart: unless-stopped

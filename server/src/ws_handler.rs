@@ -98,9 +98,14 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
 
-            ClientMessage::Play { position } => {
+            ClientMessage::PlayIntent { position } => {
                 if let Some(ref rid) = current_room {
-                    hub::handle_play(&state.rooms, rid, participant_id, position).await;
+                    hub::handle_play_intent(&state.rooms, rid, participant_id, position).await;
+                }
+            }
+            ClientMessage::Ready => {
+                if let Some(ref rid) = current_room {
+                    hub::handle_ready(&state.rooms, rid, participant_id).await;
                 }
             }
             ClientMessage::Pause { position } => {

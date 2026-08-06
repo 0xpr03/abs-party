@@ -57,11 +57,12 @@
             <!-- Controls -->
             <div class="controls">
               <button class="ctrl-btn" @click="skip(-10)">-10s</button>
-              <button class="ctrl-btn play-btn" @click="togglePlay">
-                {{ player.isPlaying.value ? '⏸' : '▶' }}
+              <button class="ctrl-btn play-btn" :class="{ buffering: buffering }" @click="togglePlay">
+                {{ buffering ? '⏳' : player.isPlaying.value ? '⏸' : '▶' }}
               </button>
               <button class="ctrl-btn" @click="skip(10)">+10s</button>
             </div>
+            <div v-if="buffering" class="buffering-notice">Buffering…</div>
 
             <div class="volume-row">
               <label class="volume-label">Vol
@@ -143,11 +144,15 @@ const displayName = computed(() => auth.username)
 const fatalError = ref('')
 const preparing = ref(true)
 const bookmarkSaved = ref(false)
+const buffering = ref(false)
 const participants = ref([])
 const bookmarks = ref([])
 const newBookmarkTitle = ref('')
 const roomState = reactive({ item: null, position: 0, playing: false, speed: 1 })
 const isHost = ref(isHostMode)
+
+let bufferingTimeout = null
+let bufferingReadyCb = null
 
 let hasConnectedOnce = false
 
@@ -292,11 +297,45 @@ async function handleMessage(msg) {
     return
   }
 
-  if (msg.type === 'play')  addEvent(`${msg.sender_name} resumed playback`, 'normal')
-  if (msg.type === 'pause') addEvent(`${msg.sender_name} paused playback`, 'normal')
+  if (msg.type === 'play_intent') {
+    const initiator = msg.sender_name || 'Someone'
+    addEvent(`${initiator} starting playback — buffering…`, 'normal')
+    cancelBuffering()
+    buffering.value = true
+    player.seekTo(msg.position)
+    bufferingReadyCb = () => sendReady()
+    player.audio.addEventListener('canplaythrough', bufferingReadyCb, { once: true })
+    bufferingTimeout = setTimeout(sendReady, 20_000)
+    return
+  }
+
+  if (msg.type === 'play') {
+    const label = msg.sender_name ? `${msg.sender_name} resumed playback` : 'All ready — playing'
+    addEvent(label, 'normal')
+    cancelBuffering()
+  }
+  if (msg.type === 'pause') {
+    addEvent(`${msg.sender_name} paused playback`, 'normal')
+    cancelBuffering()
+  }
   if (msg.type === 'seek')  addEvent(`${msg.sender_name} seeked to ${fmt(msg.position)}`, 'normal')
 
   applySyncMsg(msg)
+}
+
+function sendReady() {
+  cancelBuffering()
+  send({ type: 'ready' })
+}
+
+function cancelBuffering() {
+  buffering.value = false
+  clearTimeout(bufferingTimeout)
+  bufferingTimeout = null
+  if (bufferingReadyCb) {
+    player.audio.removeEventListener('canplaythrough', bufferingReadyCb)
+    bufferingReadyCb = null
+  }
 }
 
 function rejoinRoom() {
@@ -322,9 +361,8 @@ function togglePlay() {
     send({ type: 'pause', position: pos })
     addEvent('You paused playback', 'normal')
   } else {
-    player.play()
-    send({ type: 'play', position: pos })
-    addEvent('You resumed playback', 'normal')
+    send({ type: 'play_intent', position: pos })
+    addEvent('You started playback — waiting for all to buffer…', 'normal')
   }
 }
 
@@ -420,6 +458,8 @@ function fmt(s) {
 .ctrl-btn { background: #16213e; border: 1px solid #0f3460; color: #ccc; padding: 0.6rem 1.2rem; border-radius: 8px; cursor: pointer; font-size: 0.9rem; }
 .ctrl-btn:disabled { opacity: 0.4; cursor: default; }
 .play-btn { font-size: 1.5rem; padding: 0.75rem 1.5rem; background: #6c5ce7; border-color: #6c5ce7; color: #fff; border-radius: 50%; width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; }
+.play-btn.buffering { background: #fdcb6e; border-color: #fdcb6e; color: #2d3436; }
+.buffering-notice { font-size: 0.8rem; color: #fdcb6e; }
 
 .volume-row { display: flex; align-items: center; justify-content: center; }
 .volume-label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #aaa; white-space: nowrap; }
