@@ -123,7 +123,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, inject, onMounted, watch } from 'vue'
+import { ref, reactive, computed, inject, onMounted, onUnmounted, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWebSocket } from '../composables/useWebSocket.js'
 import { useAbsPlayer } from '../composables/useAbsPlayer.js'
@@ -131,6 +131,7 @@ import { useSyncEngine } from '../composables/useSyncEngine.js'
 import { getBookmarks, createBookmark } from '../api/abs.js'
 import { useEventLog } from '../composables/useEventLog.js'
 import { useAudioCues } from '../composables/useAudioCues.js'
+import { shortenTitle } from '../utils/title.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -150,6 +151,19 @@ const bookmarks = ref([])
 const newBookmarkTitle = ref('')
 const roomState = reactive({ item: null, position: 0, playing: false, speed: 1 })
 const isHost = ref(isHostMode)
+
+
+const previousTitle = document.title
+watchEffect(() => {
+  const bookTitle = roomState.item?.title
+  if (bookTitle) {
+    const role = isHost.value ? 'Host' : 'Guest'
+    document.title = `${shortenTitle(bookTitle)} [${role}] — ABS Party`
+  } else {
+    document.title = 'ABS Party'
+  }
+})
+onUnmounted(() => { document.title = previousTitle })
 
 let bufferingTimeout = null
 let bufferingReadyCb = null
