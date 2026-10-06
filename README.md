@@ -1,13 +1,13 @@
 # abs-party
 
-Synchronized audiobook listening for Audiobookshelf. Multiple people listen to the same book in real time: one person controls play, pause, seek, and speed; everyone else follows automatically.
+Synchronized audiobook listening for Audiobookshelf. Multiple people listen to the same book in real time: one person controls play, pause, seek; everyone else follows automatically.
 
 Each listener streams audio directly from their own Audiobookshelf account and their progress is saved there independently. The party server is a lightweight sync bus only but proxies requests to avoid CORS issues.
 
 
 ## How it works
 
-Users authenticate with their Audiobookshelf credentials (username/password or API key). The host creates a room and picks a book from a searchable library browser. Guests join by room code. The host's playback controls are broadcast over WebSocket to all participants, who each have their own ABS playback session open.
+Users authenticate with their Audiobookshelf credentials (username/password or API key). The host creates a room and picks a book from a searchable library browser. Guests join by room code. The playback controls are broadcast over WebSocket to all participants, who each have their own ABS playback session open.
 
 Before joining, each participant's current position is saved as an ABS bookmark (`pre_party_<datetime>`), so they can return to exactly where they were if the session moves their progress.
 
@@ -35,9 +35,6 @@ Switching sort mode and typing in the search box are coordinated: the active sor
 ## Security notes
 
 All ABS REST calls from the browser go through the `/api/abs-proxy/*` route on the party server rather than directly to ABS. This avoids CORS issues and lets the server enforce an allowlist of permitted endpoints. Only read and session-management calls are forwarded; write/delete/admin paths are blocked.
-
-Display names are taken from the ABS username and cannot be overridden. Two participants with the same ABS username cannot be in the same room simultaneously.
-
 
 ## Environment variables
 
@@ -74,24 +71,6 @@ To set the ABS URL, either edit `docker-compose.yml` directly or create a `.env`
 ```
 ABS_BASE_URL=https://your-abs-instance.example.com
 ```
-
-
-## Systemd (binary deployment)
-
-Build the binary and Vue SPA manually, then install:
-
-```sh
-sudo useradd -r -s /sbin/nologin abs-party
-sudo mkdir -p /opt/abs-party/static /etc/abs-party
-sudo cp abs-party abs-party.env.example /opt/abs-party/
-sudo cp abs-party.service /etc/systemd/system/
-sudo cp abs-party.env.example /etc/abs-party/env
-# edit /etc/abs-party/env
-sudo systemctl daemon-reload
-sudo systemctl enable --now abs-party
-```
-
-Logs: `journalctl -u abs-party -f`
 
 
 ## Development
@@ -146,5 +125,3 @@ Server to client:
 { "type": "pong",              "sent_at": 1719000000000 }
 { "type": "error",             "message": "..." }
 ```
-
-Only the host (room creator, or whoever took over after the host left) may send play/pause/seek/speed. Guest attempts are silently dropped by the server.
