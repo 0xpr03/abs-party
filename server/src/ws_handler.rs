@@ -70,7 +70,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
 
-            ClientMessage::CreateRoom { room_id, abs_token, item_id, item_title, item_author, library_id } => {
+            ClientMessage::CreateRoom { room_id, abs_token, item_id, item_title, item_author, library_id, settings } => {
                 let me = match validate_token(&state.abs, &abs_token, state.config.bypass_auth).await {
                     Ok(m) => m,
                     Err(e) => { let _ = tx.send(ServerMessage::Error { message: e }); continue; }
@@ -79,7 +79,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let item = ItemInfo { id: item_id, library_id, title: item_title, author: item_author };
                 let participant = Participant { id: participant_id, name: me.username.clone(), abs_token, abs_username: me.username, tx: tx.clone() };
 
-                match hub::create_room(&state.rooms, room_id.clone(), item, participant).await {
+                match hub::create_room(&state.rooms, room_id.clone(), item, participant, settings).await {
                     Ok(true) => {
                         // New room created — send initial room_state
                         current_room = Some(room_id.clone());
@@ -121,6 +121,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             ClientMessage::Speed { rate } => {
                 if let Some(ref rid) = current_room {
                     hub::handle_speed(&state.rooms, rid, participant_id, rate).await;
+                }
+            }
+            ClientMessage::UpdateSettings { settings } => {
+                if let Some(ref rid) = current_room {
+                    hub::handle_update_settings(&state.rooms, rid, participant_id, settings).await;
                 }
             }
             ClientMessage::Ping { sent_at } => {

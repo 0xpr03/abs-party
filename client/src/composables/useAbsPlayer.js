@@ -6,10 +6,15 @@ const SYNC_INTERVAL_MS = 10_000
 
 export function useAbsPlayer(absBase) {
   const audio = new Audio()
+  // Buffer actively while paused; the default ("metadata" in most browsers) stops after the
+  // header, so a ready-check would never see enough data before playback starts
+  audio.preload = 'auto'
   const sessionId = ref(null)
   const currentTime = ref(0)
   const duration = ref(0)
   const isPlaying = ref(false)
+  // True when the browser refused to start audio without a user gesture (autoplay policy)
+  const blocked = ref(false)
   const saved = parseFloat(localStorage.getItem('absPartyVolume'))
   if (isFinite(saved) && saved >= 0 && saved <= 1) {
     audio.volume = saved
@@ -122,13 +127,20 @@ export function useAbsPlayer(absBase) {
   }
 
   function play() {
-    audio.play().catch(() => {})
     isPlaying.value = true
+    blocked.value = false
+    Promise.resolve(audio.play()).catch((e) => {
+      // AbortError = interrupted by pause()/load(); that caller already set the state
+      if (e?.name === 'AbortError') return
+      isPlaying.value = false
+      if (e?.name === 'NotAllowedError') blocked.value = true
+    })
   }
 
   function pause() {
     audio.pause()
     isPlaying.value = false
+    blocked.value = false
   }
 
   function seekTo(seconds) {
@@ -215,5 +227,5 @@ export function useAbsPlayer(absBase) {
 
   onUnmounted(close)
 
-  return { open, play, pause, seekTo, setSpeed, setVolume, close, currentTime, duration, volume, isPlaying, audio }
+  return { open, play, pause, seekTo, setSpeed, setVolume, close, currentTime, duration, volume, isPlaying, blocked, audio }
 }

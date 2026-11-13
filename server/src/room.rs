@@ -3,7 +3,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::models::{ItemInfo, ParticipantInfo, ServerMessage};
+use crate::models::{ItemInfo, ParticipantInfo, RoomSettings, ServerMessage};
 
 pub struct Participant {
     pub id: Uuid,
@@ -29,10 +29,11 @@ pub struct Room {
     pub participants: Vec<Participant>,
     pub play_started_at: Option<Instant>,
     pub ready_check: Option<ReadyCheck>,
+    pub settings: RoomSettings,
 }
 
 impl Room {
-    pub fn new(id: String, item: ItemInfo, host: Participant) -> Self {
+    pub fn new(id: String, item: ItemInfo, host: Participant, settings: RoomSettings) -> Self {
         Self {
             id,
             item,
@@ -43,6 +44,7 @@ impl Room {
             participants: vec![host],
             play_started_at: None,
             ready_check: None,
+            settings,
         }
     }
 
@@ -117,6 +119,19 @@ impl Room {
         self.host_id == id
     }
 
+    /// Whether this participant may play, pause or seek.
+    pub fn may_control(&self, id: Uuid) -> bool {
+        !self.settings.host_only_controls || self.is_host(id)
+    }
+
+    /// Tell a participant whose control was rejected where the room actually is.
+    pub fn deny_control(&self, id: Uuid) {
+        self.send_to(id, ServerMessage::ControlDenied {
+            position: self.estimated_position(),
+            playing: self.playing,
+        });
+    }
+
     pub fn state_message(&self) -> ServerMessage {
         ServerMessage::RoomState {
             room_id: self.id.clone(),
@@ -125,6 +140,7 @@ impl Room {
             playing: self.playing,
             speed: self.speed,
             participants: self.participant_infos(),
+            settings: self.settings,
         }
     }
 }
@@ -159,13 +175,13 @@ pub(crate) mod test_helpers {
 mod tests {
     use super::*;
     use super::test_helpers::*;
-    use crate::models::ServerMessage;
+    use crate::models::{RoomSettings, ServerMessage};
 
     #[test]
     fn new_room_sets_host() {
         let (host, _rx) = make_participant("Alice");
         let host_id = host.id;
-        let room = Room::new("r1".into(), make_item(), host);
+        let room = Room::new("r1".into(), make_item(), host, RoomSettings::default());
         assert!(room.is_host(host_id));
         assert_eq!(room.participants.len(), 1);
     }
@@ -173,7 +189,7 @@ mod tests {
     #[test]
     fn participant_infos_marks_host() {
         let (host, _rx) = make_participant("Alice");
-        let room = Room::new("r1".into(), make_item(), host);
+        let room = Room::new("r1".into(), make_item(), host, RoomSettings::default());
         let infos = room.participant_infos();
         assert_eq!(infos.len(), 1);
         assert!(infos[0].is_host);
@@ -186,7 +202,7 @@ mod tests {
         let (guest, _guest_rx) = make_participant("Bob");
         let guest_id = guest.id;
         let host_id = host.id;
-        let mut room = Room::new("r1".into(), make_item(), host);
+        let mut room = Room::new("r1".into(), make_item(), host, RoomSettings::default());
         room.participants.push(guest);
 
         let name = room.remove_participant(guest_id);
@@ -201,7 +217,7 @@ mod tests {
         let (guest, mut guest_rx) = make_participant("Bob");
         let host_id = host.id;
         let guest_id = guest.id;
-        let mut room = Room::new("r1".into(), make_item(), host);
+        let mut room = Room::new("r1".into(), make_item(), host, RoomSettings::default());
         room.participants.push(guest);
 
         room.remove_participant(host_id);
@@ -217,7 +233,7 @@ mod tests {
     fn is_empty_after_all_leave() {
         let (host, _rx) = make_participant("Alice");
         let host_id = host.id;
-        let mut room = Room::new("r1".into(), make_item(), host);
+        let mut room = Room::new("r1".into(), make_item(), host, RoomSettings::default());
         assert!(!room.is_empty());
         room.remove_participant(host_id);
         assert!(room.is_empty());
@@ -226,7 +242,7 @@ mod tests {
     #[test]
     fn state_message_reflects_room_state() {
         let (host, _rx) = make_participant("Alice");
-        let mut room = Room::new("r1".into(), make_item(), host);
+        let mut room = Room::new("r1".into(), make_item(), host, RoomSettings::default());
         room.position = 42.0;
         room.playing = true;
         room.speed = 1.5;

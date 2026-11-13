@@ -16,6 +16,11 @@ pub enum ClientMessage {
         item_title: String,
         item_author: String,
         library_id: String,
+        #[serde(default)]
+        settings: RoomSettings,
+    },
+    UpdateSettings {
+        settings: RoomSettings,
     },
     PlayIntent {
         position: f64,
@@ -46,6 +51,16 @@ pub enum ServerMessage {
         playing: bool,
         speed: f64,
         participants: Vec<ParticipantInfo>,
+        settings: RoomSettings,
+    },
+    SettingsChanged {
+        settings: RoomSettings,
+    },
+    /// Sent only to a participant whose play/pause/seek was rejected,
+    /// so they can snap back to the authoritative room state.
+    ControlDenied {
+        position: f64,
+        playing: bool,
     },
     Play {
         position: f64,
@@ -67,6 +82,10 @@ pub enum ServerMessage {
     PlayIntent {
         position: f64,
         sender_name: String,
+        /// True when this ready-check was started because `sender_name` joined a playing room;
+        /// playback resumes automatically once everyone (including the newcomer) is ready.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        joined: bool,
     },
     Sync {
         position: f64,
@@ -86,6 +105,21 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct RoomSettings {
+    /// Only the host may play, pause or seek.
+    pub host_only_controls: bool,
+    /// Pause playback for everyone when a participant joins or leaves.
+    pub pause_on_join_leave: bool,
+}
+
+impl Default for RoomSettings {
+    fn default() -> Self {
+        Self { host_only_controls: false, pause_on_join_leave: true }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -142,7 +176,23 @@ mod tests {
     fn client_message_create_room_deserializes() {
         let json = r#"{"type":"create_room","room_id":"abcd1234","abs_token":"t","item_id":"i1","item_title":"Book","item_author":"Auth","library_id":"l1"}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, ClientMessage::CreateRoom { .. }));
+        assert!(matches!(msg, ClientMessage::CreateRoom { settings, .. } if settings == RoomSettings::default()));
+    }
+
+    #[test]
+    fn client_message_create_room_with_settings_deserializes() {
+        let json = r#"{"type":"create_room","room_id":"abcd1234","abs_token":"t","item_id":"i1","item_title":"Book","item_author":"Auth","library_id":"l1","settings":{"host_only_controls":true,"pause_on_join_leave":false}}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::CreateRoom { settings, .. }
+            if settings.host_only_controls && !settings.pause_on_join_leave));
+    }
+
+    #[test]
+    fn client_message_update_settings_deserializes() {
+        let json = r#"{"type":"update_settings","settings":{"host_only_controls":true}}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::UpdateSettings { settings }
+            if settings.host_only_controls && settings.pause_on_join_leave));
     }
 
     #[test]

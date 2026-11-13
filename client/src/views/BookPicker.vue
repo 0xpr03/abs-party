@@ -64,6 +64,16 @@
       <div class="room-name-overlay" v-if="pickedItem">
         <div class="overlay-card">
           <h3>Create room for "{{ pickedItem.media?.metadata?.title }}"?</h3>
+          <div class="room-options">
+            <label class="option">
+              <input type="checkbox" v-model="roomSettings.host_only_controls" />
+              <span>Only I can play, pause &amp; seek</span>
+            </label>
+            <label class="option">
+              <input type="checkbox" v-model="roomSettings.pause_on_join_leave" />
+              <span>Pause when someone joins or leaves</span>
+            </label>
+          </div>
           <p v-if="createError" class="error">{{ createError }}</p>
           <div class="overlay-actions">
             <button @click="pickedItem = null">Cancel</button>
@@ -76,9 +86,10 @@
 </template>
 
 <script setup>
-import { ref, computed, inject, onMounted, watch } from 'vue'
+import { ref, reactive, computed, inject, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getLibraries, getLibraryItems, searchLibraryItems } from '../api/abs.js'
+import { loadRoomSettings, saveRoomSettings } from '../utils/roomSettings.js'
 
 const router = useRouter()
 const auth = inject('auth')
@@ -109,6 +120,7 @@ watch(search, () => {
 
 const pickedItem = ref(null)
 const createError = ref('')
+const roomSettings = reactive(loadRoomSettings())
 
 onMounted(async () => {
   try {
@@ -177,6 +189,8 @@ function createRoom() {
   const item = pickedItem.value
   const meta = item.media?.metadata || {}
   const roomId = crypto.randomUUID().replace(/-/g, '').slice(0, 8)
+  // Room.vue reads these back when sending create_room
+  saveRoomSettings(roomSettings)
   router.push({
     path: `/room/${roomId}`,
     query: {
@@ -222,6 +236,9 @@ h2 { margin: 0; }
 .overlay-card h3 { margin: 0 0 1rem; }
 .overlay-card label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: #aaa; margin-bottom: 1rem; }
 .overlay-card input { padding: 0.6rem 0.75rem; border: 1px solid #0f3460; border-radius: 6px; background: #0f3460; color: #fff; font-size: 1rem; }
+.room-options { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.25rem; }
+.overlay-card .option { flex-direction: row; align-items: center; gap: 0.5rem; margin: 0; font-size: 0.85rem; color: #ccc; cursor: pointer; }
+.overlay-card .option input { padding: 0; accent-color: #6c5ce7; }
 .overlay-actions { display: flex; gap: 0.75rem; }
 .overlay-actions button { flex: 1; padding: 0.65rem; border: none; border-radius: 6px; cursor: pointer; background: #2d3436; color: #ccc; }
 .overlay-actions .primary { background: #6c5ce7; color: #fff; }

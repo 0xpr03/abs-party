@@ -232,3 +232,57 @@ async fn websocket_play_intent_and_ready_triggers_play() {
     assert_eq!(guest_play["type"], "play");
     assert!((guest_play["position"].as_f64().unwrap() - 75.5).abs() < f64::EPSILON);
 }
+
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn send_json(ws: &mut Ws, value: serde_json::Value) {
+    ws.send(Message::Text(value.to_string().into())).await.unwrap();
+}
+
+async fn recv_json(ws: &mut Ws) -> serde_json::Value {
+    serde_json::from_str(&ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn websocket_room_settings_lifecycle() {
+    let addr = spawn_test_server().await;
+
+    // Host creates a host-only room
+    let (mut host_ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    send_json(&mut host_ws, serde_json::json!({
+        "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":"i","item_title":"B","item_author":"A","library_id":"l",
+        "settings":{"host_only_controls":true,"pause_on_join_leave":false}
+    })).await;
+    let state = recv_json(&mut host_ws).await;
+    assert_eq!(state["settings"]["host_only_controls"], true);
+    assert_eq!(state["settings"]["pause_on_join_leave"], false);
+
+    // Guest joins and sees the settings
+    let (mut guest_ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    send_json(&mut guest_ws, serde_json::json!({"type":"join","room_id":"abcd1234","abs_token":"bob"})).await;
+    let guest_state = recv_json(&mut guest_ws).await;
+    assert_eq!(guest_state["settings"]["host_only_controls"], true);
+    let _ = recv_json(&mut host_ws).await; // participant_joined
+
+    // Guest seek is denied
+    send_json(&mut guest_ws, serde_json::json!({"type":"seek","position":99.0})).await;
+    let denied = recv_json(&mut guest_ws).await;
+    assert_eq!(denied["type"], "control_denied");
+    assert_eq!(denied["playing"], false);
+
+    // Guest cannot change settings: next thing the guest sees is the host's change, not their own
+    send_json(&mut guest_ws, serde_json::json!({"type":"update_settings","settings":{"host_only_controls":false,"pause_on_join_leave":true}})).await;
+    send_json(&mut host_ws, serde_json::json!({"type":"update_settings","settings":{"host_only_controls":false,"pause_on_join_leave":false}})).await;
+    for ws in [&mut host_ws, &mut guest_ws] {
+        let changed = recv_json(ws).await;
+        assert_eq!(changed["type"], "settings_changed");
+        assert_eq!(changed["settings"]["host_only_controls"], false);
+        assert_eq!(changed["settings"]["pause_on_join_leave"], false);
+    }
+
+    // Guest may now seek; host receives it
+    send_json(&mut guest_ws, serde_json::json!({"type":"seek","position":42.0})).await;
+    let seek = recv_json(&mut host_ws).await;
+    assert_eq!(seek["type"], "seek");
+    assert_eq!(seek["position"], 42.0);
+}
