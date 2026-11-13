@@ -286,3 +286,74 @@ async fn websocket_room_settings_lifecycle() {
     assert_eq!(seek["type"], "seek");
     assert_eq!(seek["position"], 42.0);
 }
+
+// --- ABS proxy: covers ---
+
+/// Fake ABS that serves a cover and echoes whether it received an Authorization header.
+async fn spawn_fake_abs() -> String {
+    use axum::{http::HeaderMap, response::IntoResponse, routing::get, Router};
+    let app = Router::new()
+        .route("/api/items/:id/cover", get(|headers: HeaderMap| async move {
+            let auth = if headers.contains_key("authorization") { "auth" } else { "noauth" };
+            ([("content-type", "image/jpeg")], format!("cover-bytes-{auth}")).into_response()
+        }))
+        .route("/api/items/:id", get(|| async { "item" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn proxy_get(abs_url: &str, path: &str, token: Option<&str>) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut cfg = test_config();
+    cfg.abs_base_url = abs_url.into();
+    let mut req = Request::builder().uri(format!("/api/abs-proxy/{path}"));
+    if let Some(t) = token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    let resp = build_app(cfg).oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes().to_vec();
+    (status, headers, body)
+}
+
+#[tokio::test]
+async fn proxy_serves_cover_without_token() {
+    let abs = spawn_fake_abs().await;
+    let (status, headers, body) = proxy_get(&abs, "api/items/09c4e9ef-c12a-432c-b92f-88cc47add86a/cover", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/jpeg");
+    assert!(headers["cache-control"].to_str().unwrap().contains("max-age"));
+    assert_eq!(body, b"cover-bytes-noauth");
+}
+
+#[tokio::test]
+async fn proxy_never_forwards_token_for_covers() {
+    let abs = spawn_fake_abs().await;
+    let (status, _, body) = proxy_get(&abs, "api/items/abc/cover", Some("secret")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"cover-bytes-noauth");
+}
+
+#[tokio::test]
+async fn proxy_still_requires_token_for_other_item_paths() {
+    let abs = spawn_fake_abs().await;
+    let (status, _, _) = proxy_get(&abs, "api/items/abc", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // Only exactly .../cover is tokenless
+    let (status, _, _) = proxy_get(&abs, "api/items/abc/cover/extra", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = proxy_get(&abs, "api/items//cover", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn proxy_blocks_cover_writes() {
+    let app = build_app(test_config());
+    let resp = app
+        .oneshot(Request::builder().method("POST").uri("/api/abs-proxy/api/items/abc/cover").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

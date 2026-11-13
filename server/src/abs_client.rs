@@ -48,14 +48,20 @@ impl AbsClient {
         Ok(resp)
     }
 
+    /// `token: None` sends no Authorization header (for endpoints ABS serves without auth).
     pub async fn proxy_raw(
         &self,
-        token: &str,
+        token: Option<&str>,
         method: reqwest::Method,
         url: &str,
         body: bytes::Bytes,
     ) -> Result<(u16, bytes::Bytes, Option<String>)> {
-        let mut builder = self.client.request(method, url).bearer_auth(token);
+        let mut builder = self.client.request(method, url);
+        match token {
+            Some(t) => builder = builder.bearer_auth(t),
+            // Unauthenticated requests are image fetches; the default Accept is JSON
+            None => builder = builder.header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8"),
+        }
         if !body.is_empty() {
             builder = builder
                 .header(reqwest::header::CONTENT_TYPE, "application/json")

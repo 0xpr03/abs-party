@@ -174,6 +174,14 @@ fn proxy_path_allowed(method: &Method, path: &str) -> bool {
     }
 }
 
+/// `api/items/<id>/cover`. ABS serves covers without auth (its Auth.js ignorePatterns),
+/// and an `<img src>` can't send our Bearer header, so these go through tokenless.
+fn is_cover_path(path: &str) -> bool {
+    path.strip_prefix("api/items/")
+        .and_then(|rest| rest.strip_suffix("/cover"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 fn matches_any(path: &str, exact: &[&str]) -> bool {
     exact.iter().any(|&p| path == p)
 }
@@ -194,12 +202,15 @@ async fn abs_proxy(
         return (StatusCode::FORBIDDEN, "Not a permitted ABS endpoint").into_response();
     }
 
+    let is_cover = method == Method::GET && is_cover_path(&path);
     let token = match headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
     {
-        Some(t) => t.to_string(),
+        // Never forward a token for covers; ABS doesn't need it
+        _ if is_cover => None,
+        Some(t) => Some(t.to_string()),
         None => {
             return (StatusCode::UNAUTHORIZED, "Missing Bearer token").into_response();
         }
@@ -214,12 +225,16 @@ async fn abs_proxy(
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .unwrap_or(reqwest::Method::GET);
 
-    match state.abs.proxy_raw(&token, reqwest_method, &url, body).await {
+    match state.abs.proxy_raw(token.as_deref(), reqwest_method, &url, body).await {
         Ok((status, resp_bytes, content_type)) => {
             let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
             let mut builder = axum::response::Response::builder().status(status_code);
             if let Some(ct) = content_type {
                 builder = builder.header(header::CONTENT_TYPE, ct);
+            }
+            if is_cover && status_code.is_success() {
+                // Covers rarely change; spare ABS a refetch per grid render
+                builder = builder.header(header::CACHE_CONTROL, "private, max-age=86400");
             }
             builder
                 .body(axum::body::Body::from(resp_bytes))

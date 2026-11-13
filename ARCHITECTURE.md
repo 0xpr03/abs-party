@@ -28,7 +28,7 @@ client/src/
 | `GET /health` | |
 | `*` | SPA, falls back to `index.html` |
 
-Audio and cover art are loaded straight from ABS: HLS (`/hls/...`, no auth) or direct-play files with `?token=`.
+Covers go through the proxy too: `GET api/items/<id>/cover` is the one path allowed without a Bearer token (ABS serves covers unauthenticated and `<img>` can't send headers); no token is ever forwarded for it. Audio is loaded straight from ABS: HLS (`/hls/...`, no auth) or direct-play files with `?token=`.
 
 ## Sync model
 

@@ -34,7 +34,7 @@
             <div class="cover-wrap">
               <img
                 v-if="roomState.item?.id"
-                :src="`${absBase}/api/items/${roomState.item.id}/cover`"
+                :src="`/api/abs-proxy/api/items/${roomState.item.id}/cover`"
                 class="cover"
                 alt="cover"
               />

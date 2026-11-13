@@ -41,7 +41,7 @@
           >
             <img
               v-if="item.media?.coverPath"
-              :src="`${absBase}/api/items/${item.id}/cover`"
+              :src="`/api/abs-proxy/api/items/${item.id}/cover`"
               :alt="item.media.metadata.title"
               class="cover"
               @load="e => e.target.classList.add('loaded')"
