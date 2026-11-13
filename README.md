@@ -1,59 +1,60 @@
 # abs-party
 
-Synchronized audiobook listening for Audiobookshelf. Multiple people listen to the same book in real time: one person controls play, pause, seek; everyone else follows automatically.
-
-Each listener streams audio directly from their own Audiobookshelf account and their progress is saved there independently. The party server is a lightweight sync bus only but proxies requests to avoid CORS issues.
-
+Listen to an audiobook together on a shared [Audiobookshelf](https://www.audiobookshelf.org/) instance. One person (the host) opens a room with a book, others join by link or room code, and playback stays in sync for everyone.
 
 ## How it works
 
-Users authenticate with their Audiobookshelf credentials (username/password or API key). The host creates a room and picks a book from a searchable library browser. Guests join by room code. The playback controls are broadcast over WebSocket to all participants, who each have their own ABS playback session open.
+- **Log in with your ABS account.** The party server forwards the login to ABS; there are no separate accounts.
+- **Everyone streams from ABS themselves.** Each listener has their own ABS playback session, so progress is saved to their own account. The party server never touches audio.
+- **The party server is a sync bus.** A WebSocket per listener relays play/pause/seek; play waits until everyone has buffered, and each listener corrects itself if it drifts more than 2.5s from the room.
+- **ABS API calls go through a reverse proxy** (`/api/abs-proxy/*`) to avoid CORS. Only an allowlist of read and playback-session endpoints is forwarded.
+- **Safety bookmarks:** when you open a room, your own ABS position is saved as a bookmark (`pre_party_<datetime>`); clicking Leave saves another (`leave_<datetime>`). The room sidebar lists your bookmarks for the book; clicking one seeks everyone there.
+- **Who controls playback:** by default *everyone* in the room can play, pause and seek, and it applies to all listeners. The host can restrict this to themselves.
+- **The host** is whoever created the room. If they leave or lose their connection, the longest-present listener becomes host and keeps it (reconnecting doesn't give it back).
+- **Room settings** (only the host can change them; set when creating the room, toggleable in the room; your last choice is remembered for your next room):
 
-Before joining, each participant's current position is saved as an ABS bookmark (`pre_party_<datetime>`), so they can return to exactly where they were if the session moves their progress.
+  | Setting | Default | |
+  |---|---|---|
+  | Only host controls playback | off | Guests can't play, pause or seek |
+  | Pause on join / leave | on | A join pauses everyone until the newcomer has loaded and buffered, then playback resumes on its own. A leave pauses. When off, playback continues and newcomers catch up on their own |
+- **Rooms live in memory** and disappear when the last person leaves. No database.
 
-Rooms are in-memory and ephemeral -- they disappear when the last participant leaves.
+Stack: Rust (axum) server that also serves the Vue 3 SPA. See [ARCHITECTURE.md](ARCHITECTURE.md) for internals.
 
+## Running
 
-## Stack
+Configuration is through environment variables:
 
-- Backend: Rust (axum 0.7, tokio), single binary
-- Frontend: Vue 3 + Vite SPA, served as static files from the same binary
-- No database
+| Variable | Default | |
+|---|---|---|
+| `ABS_BASE_URL` | `http://localhost:13378` | Your ABS instance, no trailing slash (**required**) |
+| `BIND` / `PORT` | `0.0.0.0:3456` | Listen address, or just the port |
+| `STATIC_DIR` | `./static` | Built SPA |
+| `RUST_LOG` | | e.g. `abs_party=info` |
+| `CORS_ORIGIN` | | Only if the SPA is served from a different origin |
+| `BYPASS_AUTH` | `0` | Tests only, never in production |
 
+### Docker
 
-## Book picker
+```sh
+ABS_BASE_URL=https://abs.example.com docker compose up -d --build
+```
 
-When creating a room the host browses their ABS library. The picker supports:
+Then open `http://<host>:3456` (put it behind your usual HTTPS reverse proxy).
 
-- **Sort** by last listened, title (A–Z), or date added
-- **Search** by title or author — uses the ABS server-side search API so results are not limited to the first page of items
-- **Pagination** for browsed (non-search) results
+### systemd
 
-Switching sort mode and typing in the search box are coordinated: the active sort applies to search results, and changing the sort re-runs the current search query.
+Build the server (`cargo build --release` in `server/`) and the client (`npm run build` in `client/`, which outputs to `server/static`), copy both to `/opt/abs-party`, then:
 
+```sh
+sudo useradd -r -s /sbin/nologin abs-party
+sudo mkdir -p /etc/abs-party
+sudo cp abs-party.env.example /etc/abs-party/env   # edit ABS_BASE_URL
+sudo cp abs-party.service /etc/systemd/system/
+sudo systemctl enable --now abs-party
+```
 
-## Security notes
-
-All ABS REST calls from the browser go through the `/api/abs-proxy/*` route on the party server rather than directly to ABS. This avoids CORS issues and lets the server enforce an allowlist of permitted endpoints. Only read and session-management calls are forwarded; write/delete/admin paths are blocked.
-
-## Environment variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `ABS_BASE_URL` | yes | `http://localhost:13378` | Base URL of your ABS instance, no trailing slash |
-| `BIND` | no | `0.0.0.0:3456` | TCP address to listen on |
-| `PORT` | no | -- | Alternative to BIND; sets port on `0.0.0.0` |
-| `STATIC_DIR` | no | `./static` | Path to compiled Vue SPA files |
-| `CORS_ORIGIN` | no | -- | Allowed cross-origin (e.g. `http://localhost:5173` for Vite dev). Omit in production. |
-| `RUST_LOG` | no | -- | Log filter (e.g. `abs_party=info`) |
-| `BYPASS_AUTH` | no | `0` | Set to `1` to skip ABS token validation. Never use in production. |
-
-Copy `abs-party.env.example` and edit it before deploying.
-
-
-## Docker with lima/nerdctl
-
-Build and start:
+### Docker with lima/nerdctl
 
 ```sh
 lima nerdctl compose down
@@ -72,56 +73,11 @@ To set the ABS URL, either edit `docker-compose.yml` directly or create a `.env`
 ABS_BASE_URL=https://your-abs-instance.example.com
 ```
 
-
-## Development
-
-Backend (requires Rust 1.85+):
+### Development
 
 ```sh
-cd server
-cargo run
-# or
-cargo test
+cd server && cargo run                    # Rust 1.85+
+cd client && npm install && npm run dev   # http://localhost:5173, proxies /api and /ws to :3456
 ```
 
-Frontend (runs on port 5173, proxies API calls to the backend on 3456):
-
-```sh
-cd client
-npm install
-npm run dev
-```
-
-Set `CORS_ORIGIN=http://localhost:5173` in the backend environment when running both separately.
-
-
-## WebSocket protocol
-
-The browser connects to `GET /ws`. All messages are JSON with a `type` field.
-
-Client to server:
-
-```
-{ "type": "create_room", "abs_token": "...", "item_id": "...", "item_title": "...", "item_author": "...", "library_id": "..." }
-{ "type": "join",        "abs_token": "...", "room_id": "abc12345" }
-{ "type": "play",        "position": 1234.5 }
-{ "type": "pause",       "position": 1234.5 }
-{ "type": "seek",        "position": 1234.5 }
-{ "type": "speed",       "rate": 1.25 }
-{ "type": "ping",        "sent_at": 1719000000000 }
-```
-
-Server to client:
-
-```
-{ "type": "room_state",        "room_id": "...", "item": {...}, "position": 0.0, "playing": false, "speed": 1.0, "participants": [...] }
-{ "type": "play",              "position": 1234.5, "host_time": 1719000000000 }
-{ "type": "pause",             "position": 1234.5 }
-{ "type": "seek",              "position": 1234.5 }
-{ "type": "speed",             "rate": 1.25 }
-{ "type": "participant_joined","name": "alice" }
-{ "type": "participant_left",  "name": "alice" }
-{ "type": "host_changed",      "name": "alice" }
-{ "type": "pong",              "sent_at": 1719000000000 }
-{ "type": "error",             "message": "..." }
-```
+Tests: `cargo test` in `server/`, `npm test` in `client/`.
