@@ -23,7 +23,8 @@ COPY server/src ./src
 RUN find src -name "*.rs" -exec touch {} + && cargo build --release
 
 # Stage 3: Runtime image
-FROM debian:bookworm-slim
+# Same Debian release as rust:slim, so the binary finds the glibc it was linked against
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=backend-builder /app/server/target/release/abs-party ./
