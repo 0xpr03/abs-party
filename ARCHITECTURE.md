@@ -4,7 +4,8 @@
 
 ```
 server/src/
-  lib.rs         routes + ABS proxy (allowlist)
+  lib.rs         route table, login/config handlers
+  proxy.rs       ABS REST proxy; its route table is the allowlist
   ws_handler.rs  per-connection WebSocket loop
   hub.rs         room registry, play/pause/seek/settings handling
   room.rs        Room state, host transfer, broadcast
@@ -23,7 +24,7 @@ client/src/
 | `GET /ws` | WebSocket |
 | `POST /api/abs/login` | Username/password login, forwarded to ABS |
 | `POST /api/abs/validate-key` | Validate an ABS API key via `/api/me` (not used by the UI) |
-| `ANY /api/abs-proxy/*path` | Allowlisted ABS REST proxy |
+| `/api/abs-proxy/api/...` | ABS REST proxy. Only the routes in `proxy.rs` (others 403, wrong method 405); every segment must be `[A-Za-z0-9_-]+` |
 | `GET /api/config` | `{ abs_base_url }` (runtime config for the SPA) |
 | `GET /health` | |
 | `*` | SPA, falls back to `index.html` |

@@ -3,3 +3,4 @@ server/static/
 client/node_modules/
 client/dist/
 .env
+.DS_Store

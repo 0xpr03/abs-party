@@ -4,6 +4,7 @@ use axum::http::{Request, StatusCode};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
+use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 
 fn test_config() -> Config {
     Config::for_test()
@@ -297,7 +298,11 @@ async fn spawn_fake_abs() -> String {
             let auth = if headers.contains_key("authorization") { "auth" } else { "noauth" };
             ([("content-type", "image/jpeg")], format!("cover-bytes-{auth}")).into_response()
         }))
-        .route("/api/items/:id", get(|| async { "item" }));
+        .route("/api/items/:id", get(|| async { "item" }))
+        .route("/api/libraries/:id/search", get(|headers: HeaderMap, uri: axum::http::Uri| async move {
+            let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("none").to_string();
+            format!("{} {}", uri, auth)
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -305,9 +310,13 @@ async fn spawn_fake_abs() -> String {
 }
 
 async fn proxy_get(abs_url: &str, path: &str, token: Option<&str>) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    proxy_request(abs_url, "GET", path, token).await
+}
+
+async fn proxy_request(abs_url: &str, method: &str, path: &str, token: Option<&str>) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let mut cfg = test_config();
     cfg.abs_base_url = abs_url.into();
-    let mut req = Request::builder().uri(format!("/api/abs-proxy/{path}"));
+    let mut req = Request::builder().method(method).uri(format!("/api/abs-proxy/{path}"));
     if let Some(t) = token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
@@ -341,19 +350,197 @@ async fn proxy_still_requires_token_for_other_item_paths() {
     let abs = spawn_fake_abs().await;
     let (status, _, _) = proxy_get(&abs, "api/items/abc", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // Only exactly .../cover is tokenless
-    let (status, _, _) = proxy_get(&abs, "api/items/abc/cover/extra", None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _, _) = proxy_get(&abs, "api/items//cover", None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn proxy_blocks_cover_writes() {
-    let app = build_app(test_config());
-    let resp = app
-        .oneshot(Request::builder().method("POST").uri("/api/abs-proxy/api/items/abc/cover").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+async fn proxy_forwards_path_query_and_token() {
+    let abs = spawn_fake_abs().await;
+    let (status, _, body) = proxy_get(&abs, "api/libraries/lib1/search?q=fox&limit=40", Some("tok")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(String::from_utf8(body).unwrap(), "/api/libraries/lib1/search?q=fox&limit=40 Bearer tok");
+}
+
+#[tokio::test]
+async fn proxy_blocks_paths_not_in_route_table() {
+    let abs = spawn_fake_abs().await;
+    for path in [
+        "api/items/abc/file/1",          // raw audio download — was allowed by the old prefix match
+        "api/items/abc/ebook",
+        "api/libraries/a/b/c/items",     // was allowed by the old prefix/suffix match
+        "api/items/abc/cover/extra",
+        "api/users",
+        "login",
+    ] {
+        let (status, _, _) = proxy_get(&abs, path, Some("tok")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+/// Fake ABS that accepts anything and counts what reaches it.
+async fn spawn_counting_abs() -> (String, Arc<AtomicUsize>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let app = axum::Router::new().fallback(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        async { "forwarded" }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), hits)
+}
+
+/// Sensitive endpoints taken from the ABS source (server/routers/ApiRouter.js, Auth.js,
+/// Server.js, routers/PublicRouter.js). None may reach ABS, even with a valid token —
+/// a guest's token is still a full ABS session, maybe an admin's.
+#[tokio::test]
+async fn proxy_never_forwards_admin_destructive_or_auth_endpoints() {
+    let (abs, hits) = spawn_counting_abs().await;
+    let id = "09c4e9ef-c12a-432c-b92f-88cc47add86a";
+    let cases: &[(&str, String)] = &[
+        // Login / session / account
+        ("POST", "login".into()),
+        ("POST", "logout".into()),
+        ("POST", "auth/refresh".into()),
+        ("GET", "auth/openid".into()),
+        ("GET", "auth/openid/config".into()),
+        ("POST", "init".into()),
+        ("GET", "status".into()),
+        ("PATCH", "api/me/password".into()),
+        ("POST", "api/authorize".into()),
+        ("GET", "api/api-keys".into()),
+        ("POST", "api/api-keys".into()),
+        ("DELETE", format!("api/api-keys/{id}")),
+        ("GET", "api/me/sessions".into()),
+        ("DELETE", format!("api/me/sessions/{id}")),
+        // User administration
+        ("GET", "api/users".into()),
+        ("GET", "api/users/online".into()),
+        ("POST", "api/users".into()),
+        ("GET", format!("api/users/{id}")),
+        ("PATCH", format!("api/users/{id}")),
+        ("DELETE", format!("api/users/{id}")),
+        ("PATCH", format!("api/users/{id}/openid-unlink")),
+        // Server administration
+        ("PATCH", "api/settings".into()),
+        ("GET", "api/auth-settings".into()),
+        ("PATCH", "api/auth-settings".into()),
+        ("GET", "api/backups".into()),
+        ("POST", "api/backups".into()),
+        ("GET", format!("api/backups/{id}/apply")),   // a GET that restores a backup
+        ("GET", format!("api/backups/{id}/download")),
+        ("DELETE", format!("api/backups/{id}")),
+        ("PATCH", "api/backups/path".into()),
+        ("GET", "api/filesystem".into()),
+        ("POST", "api/filesystem/pathexists".into()),
+        ("GET", "api/logger-data".into()),
+        ("GET", "api/sessions".into()),
+        ("POST", "api/sessions/batch/delete".into()),
+        ("DELETE", format!("api/sessions/{id}")),
+        ("POST", "api/notifications".into()),
+        ("GET", "api/notifications/test".into()),
+        ("PATCH", "api/emails/settings".into()),
+        ("POST", "api/custom-metadata-providers".into()),
+        ("POST", "api/cache/purge".into()),
+        ("POST", "api/watcher/update".into()),
+        ("POST", "api/validate-cron".into()),
+        ("GET", "api/stats/server".into()),
+        // Libraries
+        ("POST", "api/libraries".into()),
+        ("PATCH", format!("api/libraries/{id}")),
+        ("DELETE", format!("api/libraries/{id}")),
+        ("DELETE", format!("api/libraries/{id}/issues")),
+        ("POST", format!("api/libraries/{id}/scan")),
+        ("POST", format!("api/libraries/{id}/remove-metadata")),
+        ("GET", format!("api/libraries/{id}/matchall")),  // GET that rewrites metadata
+        ("GET", format!("api/libraries/{id}/download")),
+        ("POST", "api/libraries/order".into()),
+        // Media items
+        ("DELETE", format!("api/items/{id}")),
+        ("PATCH", format!("api/items/{id}/media")),
+        ("POST", format!("api/items/{id}/cover")),
+        ("PATCH", format!("api/items/{id}/cover")),
+        ("DELETE", format!("api/items/{id}/cover")),
+        ("POST", format!("api/items/{id}/match")),
+        ("PATCH", format!("api/items/{id}/tracks")),
+        ("POST", format!("api/items/{id}/scan")),
+        ("POST", format!("api/items/{id}/chapters")),
+        ("GET", format!("api/items/{id}/download")),
+        ("GET", format!("api/items/{id}/file/123")),
+        ("DELETE", format!("api/items/{id}/file/123")),
+        ("POST", "api/items/batch/delete".into()),
+        ("POST", "api/items/batch/update".into()),
+        ("POST", "api/items/batch/scan".into()),
+        ("POST", "api/upload".into()),
+        ("POST", format!("api/tools/item/{id}/encode-m4b")),
+        ("POST", format!("api/tools/item/{id}/embed-metadata")),
+        ("POST", "api/tools/batch/embed-metadata".into()),
+        ("DELETE", format!("api/authors/{id}")),
+        ("PATCH", format!("api/series/{id}")),
+        ("DELETE", "api/tags/sometag".into()),
+        ("DELETE", "api/genres/somegenre".into()),
+        ("POST", format!("api/podcasts/{id}/download-episodes")),
+        ("GET", format!("api/podcasts/{id}/clear-queue")),   // GET that mutates
+        ("DELETE", format!("api/podcasts/{id}/episode/{id}")),
+        // Sharing / feeds (make media public)
+        ("POST", "api/share/mediaitem".into()),
+        ("POST", format!("api/feeds/item/{id}/open")),
+        ("PATCH", "public/share/slug/progress".into()),
+        // The user's own data, beyond what the party needs
+        ("PATCH", format!("api/me/progress/{id}")),
+        ("DELETE", format!("api/me/progress/{id}")),
+        ("PATCH", "api/me/progress/batch/update".into()),
+        ("GET", format!("api/me/progress/{id}/remove-from-continue-listening")),  // GET that mutates
+        ("PATCH", format!("api/me/item/{id}/bookmark")),
+        ("DELETE", format!("api/me/item/{id}/bookmark/123")),
+        ("POST", "api/session/local".into()),
+        ("POST", "api/session/local-all".into()),
+        ("DELETE", format!("api/collections/{id}")),
+        ("DELETE", format!("api/playlists/{id}")),
+    ];
+    for (method, path) in cases {
+        let (status, _, _) = proxy_request(&abs, method, path, Some("tok")).await;
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::METHOD_NOT_ALLOWED,
+            "{method} {path} -> {status}"
+        );
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "a blocked request reached ABS");
+
+    // Control: the counting fake does see an allowed request
+    let (status, _, _) = proxy_request(&abs, "GET", &format!("api/items/{id}"), Some("tok")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn proxy_blocks_traversal_and_odd_segments() {
+    let abs = spawn_fake_abs().await;
+    for path in [
+        "api/items/../cover",            // :item_id would capture ".."
+        "api/items/..",
+        "api/items/%2e%2e/cover",
+        "api/items/a%2Fb/cover",
+        "api/items/./cover",
+        "api/items//cover",
+        "api/me/",
+    ] {
+        let (status, _, _) = proxy_get(&abs, path, Some("tok")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn proxy_rejects_wrong_method_on_listed_paths() {
+    let abs = spawn_fake_abs().await;
+    for (method, path) in [
+        ("POST", "api/items/abc/cover"),
+        ("DELETE", "api/items/abc"),
+        ("PATCH", "api/me"),
+        ("GET", "api/items/abc/play"),
+        ("PUT", "api/session/s1/sync"),
+    ] {
+        let (status, _, _) = proxy_request(&abs, method, path, Some("tok")).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {path}");
+    }
 }
