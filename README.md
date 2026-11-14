@@ -42,6 +42,8 @@ ABS_BASE_URL=https://abs.example.com docker compose up -d --build
 
 Then open `http://<host>:3456` (put it behind your usual HTTPS reverse proxy).
 
+CI publishes prebuilt images for amd64 and arm64 after all tests pass on `main` (`latest`), and for `v*` tags (the version): `ghcr.io/0xpr03/abs-party` and `0xpr03/abs-party` on Docker Hub. To use one, replace `build: .` in `docker-compose.yml` with `image: 0xpr03/abs-party:latest`.
+
 ### systemd
 
 Build the server (`cargo build --release` in `server/`) and the client (`npm run build` in `client/`, which outputs to `server/static`), copy both to `/opt/abs-party`, then:
