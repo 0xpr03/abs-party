@@ -56,10 +56,59 @@ async fn unknown_route_returns_404_or_fallback() {
 
 // --- WebSocket tests ---
 
-async fn spawn_test_server() -> std::net::SocketAddr {
+const ITEM: &str = "09c4e9ef-c12a-432c-b92f-88cc47add86a";
+const LIBRARY: &str = "7f6a2b1c-3d4e-4f50-8a9b-0c1d2e3f4a5b";
+/// The fake ABS answers 403 for this one, like ABS does for a library the user can't access
+const FORBIDDEN_ITEM: &str = "00000000-0000-4000-8000-000000000403";
+/// ...and returns an absurdly long title for this one
+const LONG_TITLE_ITEM: &str = "00000000-0000-4000-8000-000000000999";
+
+/// Fake ABS for the WebSocket tests: `GET /api/items/:id?expanded=1` the way ABS shapes it
+async fn spawn_fake_abs_items() -> String {
+    use axum::{extract::Path, http::StatusCode, response::IntoResponse, routing::get, Json};
+    let app = axum::Router::new().route("/api/items/:id", get(|Path(id): Path<String>| async move {
+        let title = match id.as_str() {
+            FORBIDDEN_ITEM => return StatusCode::FORBIDDEN.into_response(),
+            LONG_TITLE_ITEM => "ä".repeat(5000),
+            _ => "Test Book".into(),
+        };
+        let author = if id == LONG_TITLE_ITEM { "x".repeat(5000) } else { "Test Author".into() };
+        Json(serde_json::json!({
+            "id": id, "libraryId": LIBRARY, "mediaType": "book",
+            "media": { "metadata": { "title": title, "authorName": author }, "chapters": [] },
+            "userMediaProgress": { "currentTime": 512.25, "isFinished": false }
+        })).into_response()
+    }))
+    // Token "tok-<name>" belongs to user <name>; anything else is rejected like ABS does
+    .route("/api/me", get(|headers: axum::http::HeaderMap| async move {
+        let token = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+        match token.strip_prefix("Bearer tok-") {
+            Some(name) => Json(serde_json::json!({ "id": format!("id-{name}"), "username": name })).into_response(),
+            None => StatusCode::UNAUTHORIZED.into_response(),
+        }
+    }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = build_app(test_config());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn spawn_test_server() -> std::net::SocketAddr {
+    spawn_server(true).await
+}
+
+/// With real token validation against the fake ABS `/api/me` (no BYPASS_AUTH)
+async fn spawn_test_server_with_auth() -> std::net::SocketAddr {
+    spawn_server(false).await
+}
+
+async fn spawn_server(bypass_auth: bool) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut cfg = test_config();
+    cfg.abs_base_url = spawn_fake_abs_items().await;
+    cfg.bypass_auth = bypass_auth;
+    let app = build_app(cfg);
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -115,10 +164,7 @@ async fn websocket_create_and_join_room() {
                 "type": "create_room",
                 "room_id": "abcd1234",
                 "abs_token": "alice",
-                "item_id": "item1",
-                "item_title": "Test Book",
-                "item_author": "Test Author",
-                "library_id": "lib1"
+                "item_id": ITEM
             })
             .to_string()
             .into(),
@@ -174,7 +220,7 @@ async fn websocket_play_intent_and_ready_triggers_play() {
         .unwrap();
     host_ws
         .send(Message::Text(
-            serde_json::json!({"type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":"i","item_title":"B","item_author":"A","library_id":"l"})
+            serde_json::json!({"type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":ITEM})
             .to_string().into(),
         ))
         .await
@@ -244,6 +290,119 @@ async fn recv_json(ws: &mut Ws) -> serde_json::Value {
     serde_json::from_str(&ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap()
 }
 
+/// A room's item_id ends up in every guest's proxied ABS calls (with the guest's token),
+/// so a crafted one must never make it into a room — e.g. via a `?host=true&itemId=…` link.
+#[tokio::test]
+async fn websocket_create_room_rejects_crafted_item_ids() {
+    let addr = spawn_test_server().await;
+    for bad in ["..%2Fbackups%2F09c4e9ef-c12a-432c-b92f-88cc47add86a%2Fapply", "../users", "item1"] {
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+        send_json(&mut ws, serde_json::json!({
+            "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":bad
+        })).await;
+        assert_eq!(recv_json(&mut ws).await["type"], "error", "{bad}");
+    }
+    // ...and none of them created the room
+    let (mut guest, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    send_json(&mut guest, serde_json::json!({"type":"join","room_id":"abcd1234","abs_token":"bob"})).await;
+    let msg = recv_json(&mut guest).await;
+    assert_eq!(msg["type"], "error");
+    assert!(msg["message"].as_str().unwrap().contains("not found"));
+}
+
+#[tokio::test]
+async fn websocket_room_item_details_come_from_abs_not_the_client() {
+    let addr = spawn_test_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    // An old/forged client still sending its own details: ignored
+    send_json(&mut ws, serde_json::json!({
+        "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":ITEM,
+        "item_title":"Totally Different Book","item_author":"Someone","library_id":"00000000-0000-4000-8000-000000000000"
+    })).await;
+    let state = recv_json(&mut ws).await;
+    assert_eq!(state["item"]["id"], ITEM);
+    assert_eq!(state["item"]["title"], "Test Book");
+    assert_eq!(state["item"]["author"], "Test Author");
+    assert_eq!(state["item"]["library_id"], LIBRARY);
+    // ...and so does the start position: the host's ABS progress
+    assert_eq!(state["position"], 512.25);
+}
+
+/// Names shown in a room are the ABS usernames behind the tokens — never client-supplied
+#[tokio::test]
+async fn websocket_participant_names_come_from_abs() {
+    let addr = spawn_test_server_with_auth().await;
+    let (mut host, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    // Extra name fields a forged client might try: ignored
+    send_json(&mut host, serde_json::json!({
+        "type":"create_room","room_id":"abcd1234","abs_token":"tok-alice","item_id":ITEM,
+        "name":"Mallory","username":"Mallory","abs_username":"Mallory"
+    })).await;
+    let state = recv_json(&mut host).await;
+    assert_eq!(state["participants"], serde_json::json!([{"name":"alice","is_host":true}]));
+
+    let (mut guest, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    send_json(&mut guest, serde_json::json!({
+        "type":"join","room_id":"abcd1234","abs_token":"tok-bob","name":"alice"
+    })).await;
+    let state = recv_json(&mut guest).await;
+    assert_eq!(state["participants"], serde_json::json!([{"name":"alice","is_host":true},{"name":"bob","is_host":false}]));
+    let joined = recv_json(&mut host).await;
+    assert_eq!(joined, serde_json::json!({"type":"participant_joined","name":"bob"}));
+}
+
+#[tokio::test]
+async fn websocket_rejects_token_abs_does_not_accept() {
+    let addr = spawn_test_server_with_auth().await;
+    for msg in [
+        serde_json::json!({"type":"create_room","room_id":"abcd1234","abs_token":"forged","item_id":ITEM}),
+        serde_json::json!({"type":"join","room_id":"abcd1234","abs_token":"forged"}),
+    ] {
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+        send_json(&mut ws, msg).await;
+        let reply = recv_json(&mut ws).await;
+        assert_eq!(reply["type"], "error");
+        assert_eq!(reply["message"], "ABS token validation failed");
+    }
+}
+
+#[tokio::test]
+async fn websocket_create_room_fails_for_item_host_cannot_access() {
+    let addr = spawn_test_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    send_json(&mut ws, serde_json::json!({
+        "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":FORBIDDEN_ITEM
+    })).await;
+    let msg = recv_json(&mut ws).await;
+    assert_eq!(msg["type"], "error");
+    assert_eq!(msg["message"], "Could not load this item from ABS");
+}
+
+#[tokio::test]
+async fn websocket_clips_long_title_and_author() {
+    let addr = spawn_test_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    send_json(&mut ws, serde_json::json!({
+        "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":LONG_TITLE_ITEM
+    })).await;
+    let state = recv_json(&mut ws).await;
+    assert_eq!(state["item"]["title"].as_str().unwrap().chars().count(), 300);
+    assert_eq!(state["item"]["author"].as_str().unwrap().chars().count(), 300);
+}
+
+#[tokio::test]
+async fn websocket_drops_oversized_messages() {
+    let addr = spawn_test_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    let huge = format!(r#"{{"type":"ping","sent_at":0,"pad":"{}"}}"#, "x".repeat(100 * 1024));
+    let _ = ws.send(Message::Text(huge.into())).await;
+    // The server closes the connection instead of answering
+    match ws.next().await {
+        None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {}
+        Some(Ok(other)) => panic!("expected the connection to close, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn websocket_room_settings_lifecycle() {
     let addr = spawn_test_server().await;
@@ -251,7 +410,7 @@ async fn websocket_room_settings_lifecycle() {
     // Host creates a host-only room
     let (mut host_ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
     send_json(&mut host_ws, serde_json::json!({
-        "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":"i","item_title":"B","item_author":"A","library_id":"l",
+        "type":"create_room","room_id":"abcd1234","abs_token":"alice","item_id":ITEM,
         "settings":{"host_only_controls":true,"pause_on_join_leave":false}
     })).await;
     let state = recv_json(&mut host_ws).await;

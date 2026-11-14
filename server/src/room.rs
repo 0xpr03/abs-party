@@ -159,7 +159,7 @@ pub(crate) mod test_helpers {
     use tokio::sync::mpsc;
 
     pub fn make_item() -> ItemInfo {
-        ItemInfo { id: "item1".into(), library_id: "lib1".into(), title: "Book".into(), author: "Author".into() }
+        ItemInfo { id: Uuid::new_v4(), library_id: Uuid::new_v4(), title: "Book".into(), author: "Author".into() }
     }
 
     pub fn make_participant(name: &str) -> (Participant, mpsc::UnboundedReceiver<ServerMessage>) {

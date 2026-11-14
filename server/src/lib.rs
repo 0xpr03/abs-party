@@ -94,7 +94,9 @@ pub async fn run() {
 // --- Handlers ---
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| ws_handler::handle_socket(socket, state))
+    // Our largest message (create_room) is well under 2 KiB; axum's default allows 64 MiB
+    ws.max_message_size(64 * 1024)
+        .on_upgrade(move |socket| ws_handler::handle_socket(socket, state))
 }
 
 #[derive(serde::Deserialize)]

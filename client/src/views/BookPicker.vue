@@ -187,7 +187,6 @@ function pick(item) {
 
 function createRoom() {
   const item = pickedItem.value
-  const meta = item.media?.metadata || {}
   const roomId = crypto.randomUUID().replace(/-/g, '').slice(0, 8)
   // Room.vue reads these back when sending create_room
   saveRoomSettings(roomSettings)
@@ -196,9 +195,6 @@ function createRoom() {
     query: {
       host: 'true',
       itemId: item.id,
-      libraryId: selectedLibId.value,
-      title: meta.title || 'Untitled',
-      author: meta.authorName || '',
     },
   })
 }

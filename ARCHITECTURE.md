@@ -60,7 +60,7 @@ JSON with a `type` field.
 Client → server:
 
 ```
-create_room      { room_id, abs_token, item_id, item_title, item_author, library_id, settings? }
+create_room      { room_id, abs_token, item_id, settings? }  // title/author/library looked up from ABS
 join             { room_id, abs_token }
 play_intent      { position }
 ready            {}
@@ -72,6 +72,10 @@ ping             { sent_at }
 ```
 
 `create_room` for an ID that already exists joins that room instead, and the existing settings stay.
+
+`create_room` loads the item with the host's token (`GET /api/items/<id>?expanded=1&include=progress`), so the title, author, library and a new room's start position (the host's progress; 0 if finished, like ABS) are ABS's, and a host can't open a room for an item they can't access (ABS 403/404 → `error`).
+
+Input checks: `room_id` is exactly 8 letters/digits; `item_id` must be a UUID (reserialized canonically, since it ends up in every guest's proxied ABS URLs); title/author are clipped to 300 chars; positions must be finite and ≥ 0; WebSocket messages over 64 KiB close the connection.
 
 Server → client:
 

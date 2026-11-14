@@ -271,10 +271,7 @@ onMounted(async () => {
       type: 'create_room',
       room_id: roomId.value,
       abs_token: auth.token,
-      item_id: route.query.itemId,
-      item_title: route.query.title,
-      item_author: route.query.author,
-      library_id: route.query.libraryId,
+      item_id: route.query.itemId,  // the server looks up title/author from ABS
       settings: loadRoomSettings(),
     })
   } else {
@@ -297,28 +294,22 @@ async function handleMessage(msg) {
 
     const me = participants.value.find(p => p.name === displayName.value)
     isHost.value = me?.is_host ?? false
-    // Only the creator of a brand-new room publishes its own ABS position. Rejoining an
-    // existing room (e.g. after a reconnect) follows the room like everyone else.
+    // A host whose room was lost (server restart) and just got recreated publishes its live
+    // player position: fresher than the ABS progress the server started the room from.
+    // Rejoining a room that still exists follows the room like everyone else.
     const publishOwnPosition = isHostMode && isHost.value && msg.participants.length === 1
 
     // Now open the player (saves bookmark, creates ABS session)
     if (preparing.value && auth.token && roomState.item?.id) {
       preparing.value = false
       try {
-        const session = await player.open(auth.token, roomState.item.id)
+        await player.open(auth.token, roomState.item.id)
         bookmarkSaved.value = true
         setTimeout(() => { bookmarkSaved.value = false }, 5000)
         await loadBookmarks()
         playerReady = true
-        if (publishOwnPosition) {
-          // Host: start from their own last ABS position and publish it so guests sync correctly
-          const startPos = Math.max(0, session.currentTime ?? 0)
-          player.seekTo(startPos)
-          clock.set({ position: startPos })
-          send({ type: 'seek', position: startPos })
-        } else {
-          followRoom()
-        }
+        // A new room already starts at the host's ABS progress (the server looks it up)
+        followRoom()
       } catch (e) {
         fatalError.value = 'Failed to open playback session: ' + e.message
       }
@@ -464,9 +455,6 @@ function rejoinRoom() {
       room_id: roomId.value,
       abs_token: auth.token,
       item_id: roomState.item.id,
-      item_title: roomState.item.title,
-      item_author: roomState.item.author,
-      library_id: roomState.item.library_id,
       settings: { ...roomSettings },
     })
   } else if (roomId.value) {

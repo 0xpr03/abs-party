@@ -70,16 +70,25 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
 
-            ClientMessage::CreateRoom { room_id, abs_token, item_id, item_title, item_author, library_id, settings } => {
+            ClientMessage::CreateRoom { room_id, abs_token, item_id, settings } => {
                 let me = match validate_token(&state.abs, &abs_token, state.config.bypass_auth).await {
                     Ok(m) => m,
                     Err(e) => { let _ = tx.send(ServerMessage::Error { message: e }); continue; }
                 };
 
-                let item = ItemInfo { id: item_id, library_id, title: item_title, author: item_author };
+                // Item details and the start position (host's progress) come from ABS, not the
+                // client, so guests see what's really playing and never join at a stale 0:00
+                let (item, start_position) = match state.abs.item(&abs_token, item_id).await {
+                    Ok((item, start)) => (ItemInfo { title: clip(item.title), author: clip(item.author), ..item }, start),
+                    Err(e) => {
+                        tracing::warn!("create_room: item {item_id} lookup failed: {e:#}");
+                        let _ = tx.send(ServerMessage::Error { message: "Could not load this item from ABS".into() });
+                        continue;
+                    }
+                };
                 let participant = Participant { id: participant_id, name: me.username.clone(), abs_token, abs_username: me.username, tx: tx.clone() };
 
-                match hub::create_room(&state.rooms, room_id.clone(), item, participant, settings).await {
+                match hub::create_room(&state.rooms, room_id.clone(), item, start_position, participant, settings).await {
                     Ok(true) => {
                         // New room created — send initial room_state
                         current_room = Some(room_id.clone());
@@ -136,6 +145,17 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
     if let Some(rid) = current_room {
         hub::leave_room(&state.rooms, &rid, participant_id).await;
+    }
+}
+
+/// Title/author are display-only (Vue escapes them) but get broadcast to every guest;
+/// ABS itself doesn't limit their length
+const MAX_TEXT_CHARS: usize = 300;
+
+fn clip(s: String) -> String {
+    match s.char_indices().nth(MAX_TEXT_CHARS) {
+        Some((end, _)) => s[..end].to_string(),
+        None => s,
     }
 }
 

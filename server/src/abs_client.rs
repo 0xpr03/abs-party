@@ -1,7 +1,8 @@
 use anyhow::Result;
 use reqwest::{Client, header};
 
-use crate::models::{AbsLoginResponse, AbsMeResponse};
+use crate::models::{AbsItemResponse, AbsLoginResponse, AbsMeResponse, ItemInfo};
+use uuid::Uuid;
 
 pub struct AbsClient {
     client: Client,
@@ -46,6 +47,22 @@ impl AbsClient {
             .json::<AbsMeResponse>()
             .await?;
         Ok(resp)
+    }
+
+    /// The item plus where `token`'s user would start playing it.
+    /// Fails if the item doesn't exist or the user can't access its library.
+    pub async fn item(&self, token: &str, item_id: Uuid) -> Result<(ItemInfo, f64)> {
+        let resp = self
+            .client
+            .get(format!("{}/api/items/{item_id}?expanded=1&include=progress", self.base_url))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<AbsItemResponse>()
+            .await?;
+        let start = resp.start_position();
+        Ok((resp.into(), start))
     }
 
     /// `token: None` sends no Authorization header (for endpoints ABS serves without auth).

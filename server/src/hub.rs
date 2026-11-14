@@ -26,10 +26,12 @@ fn validate_room_id(id: &str) -> Result<(), String> {
 
 /// Create a new room with the given ID, or join the existing room if the ID is already in use.
 /// Returns Ok(true) if a new room was created, Ok(false) if joined an existing room.
+/// `start_position` (the host's ABS progress) only applies to a new room.
 pub async fn create_room(
     rooms: &RoomMap,
     room_id: String,
     item: ItemInfo,
+    start_position: f64,
     host: Participant,
     settings: RoomSettings,
 ) -> Result<bool, String> {
@@ -38,7 +40,10 @@ pub async fn create_room(
         join_room(rooms, &room_id, host).await?;
         return Ok(false);
     }
-    let room = Room::new(room_id.clone(), item, host, settings);
+    let mut room = Room::new(room_id.clone(), item, host, settings);
+    if start_position.is_finite() && start_position > 0.0 {
+        room.position = start_position;
+    }
     rooms.insert(room_id, Arc::new(Mutex::new(room)));
     Ok(true)
 }
@@ -299,19 +304,30 @@ mod tests {
     async fn create_room_inserts_into_map() {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
-        let created = create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        let created = create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
         assert!(created); // new room
         assert!(rooms.contains_key("testroom"));
+    }
+
+    #[tokio::test]
+    async fn create_room_starts_at_host_progress_but_rejoin_keeps_room_position() {
+        let rooms = new_room_map();
+        let (host, _rx) = make_participant("Alice");
+        create_room(&rooms, "testroom".into(), make_item(), 1234.5, host, RoomSettings::default()).await.unwrap();
+        let (guest, mut guest_rx) = make_participant("Bob");
+        create_room(&rooms, "testroom".into(), make_item(), 99.0, guest, RoomSettings::default()).await.unwrap();
+        let msg = guest_rx.recv().await.unwrap();
+        assert!(matches!(msg, ServerMessage::RoomState { position, .. } if position == 1234.5));
     }
 
     #[tokio::test]
     async fn create_room_joins_existing_room() {
         let rooms = new_room_map();
         let (host, _host_rx) = make_participant("Alice");
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
 
         let (guest, mut guest_rx) = make_participant("Bob");
-        let joined = create_room(&rooms, "testroom".into(), make_item(), guest, RoomSettings::default()).await.unwrap();
+        let joined = create_room(&rooms, "testroom".into(), make_item(), 0.0, guest, RoomSettings::default()).await.unwrap();
         assert!(!joined); // joined existing
         // join_room sends room_state to the newcomer
         let msg = guest_rx.recv().await.unwrap();
@@ -322,7 +338,7 @@ mod tests {
     async fn create_room_rejects_invalid_id() {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
-        let result = create_room(&rooms, "bad!id".into(), make_item(), host, RoomSettings::default()).await;
+        let result = create_room(&rooms, "bad!id".into(), make_item(), 0.0, host, RoomSettings::default()).await;
         assert!(result.is_err());
     }
 
@@ -330,7 +346,7 @@ mod tests {
     async fn join_room_sends_state_to_newcomer() {
         let rooms = new_room_map();
         let (host, _host_rx) = make_participant("Alice");
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
 
         let (guest, mut guest_rx) = make_participant("Bob");
         join_room(&rooms, "testroom", guest).await.unwrap();
@@ -343,7 +359,7 @@ mod tests {
     async fn join_room_notifies_existing_participants() {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
 
         let (guest, _guest_rx) = make_participant("Bob");
         join_room(&rooms, "testroom", guest).await.unwrap();
@@ -373,7 +389,7 @@ mod tests {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
         let host_id = host.id;
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
         let room_id = "testroom";
 
         let (guest, mut guest_rx) = make_participant("Bob");
@@ -409,7 +425,7 @@ mod tests {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
         let host_id = host.id;
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
         let room_id = "testroom";
 
         let (guest, mut guest_rx) = make_participant("Bob");
@@ -437,7 +453,7 @@ mod tests {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
         let host_id = host.id;
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
 
         leave_room(&rooms, "testroom", host_id).await;
 
@@ -448,7 +464,7 @@ mod tests {
     async fn leave_room_notifies_remaining() {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
-        create_room(&rooms, "testroom".into(), make_item(), host, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, RoomSettings::default()).await.unwrap();
         let room_id = "testroom";
 
         let (guest, _guest_rx) = make_participant("Bob");
@@ -469,7 +485,7 @@ mod tests {
         let rooms = new_room_map();
         let (host, mut host_rx) = make_participant("Alice");
         let host_id = host.id;
-        create_room(&rooms, "testroom".into(), make_item(), host, settings).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, settings).await.unwrap();
         let (guest, mut guest_rx) = make_participant("Bob");
         let guest_id = guest.id;
         join_room(&rooms, "testroom", guest).await.unwrap();
@@ -487,7 +503,7 @@ mod tests {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
         let settings = RoomSettings { host_only_controls: true, pause_on_join_leave: false };
-        create_room(&rooms, "testroom".into(), make_item(), host, settings).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, settings).await.unwrap();
         let (guest, mut guest_rx) = make_participant("Bob");
         join_room(&rooms, "testroom", guest).await.unwrap();
         let msg = guest_rx.recv().await.unwrap();
@@ -498,9 +514,9 @@ mod tests {
     async fn rejoining_existing_room_keeps_original_settings() {
         let rooms = new_room_map();
         let (host, _rx) = make_participant("Alice");
-        create_room(&rooms, "testroom".into(), make_item(), host, host_only()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, host, host_only()).await.unwrap();
         let (guest, _guest_rx) = make_participant("Bob");
-        create_room(&rooms, "testroom".into(), make_item(), guest, RoomSettings::default()).await.unwrap();
+        create_room(&rooms, "testroom".into(), make_item(), 0.0, guest, RoomSettings::default()).await.unwrap();
         let room = rooms.get("testroom").unwrap().clone();
         assert_eq!(room.lock().await.settings, host_only());
     }
