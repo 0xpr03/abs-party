@@ -238,4 +238,11 @@ h2 { margin: 0; }
 .overlay-actions { display: flex; gap: 0.75rem; }
 .overlay-actions button { flex: 1; padding: 0.65rem; border: none; border-radius: 6px; cursor: pointer; background: #2d3436; color: #ccc; }
 .overlay-actions .primary { background: #6c5ce7; color: #fff; }
+@media (max-width: 700px) {
+  .page { padding: 1rem; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); gap: 0.75rem; }
+  .toolbar { flex-wrap: wrap; }
+  .search { flex-basis: 100%; }
+  .overlay-card { margin: 1rem; padding: 1.5rem; }
+}
 </style>
