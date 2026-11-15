@@ -2,6 +2,79 @@
 
 Listen to an audiobook together on a shared [Audiobookshelf](https://www.audiobookshelf.org/) instance. One person (the host) opens a room with a book, others join by link or room code, and playback stays in sync for everyone.
 
+## Running
+
+### Docker
+
+```sh
+docker run -d --name abs-party --restart unless-stopped -p 3456:3456 \
+  -e ABS_BASE_URL=https://abs.example.com \
+  0xpr03/abs-party:latest
+```
+
+Or with compose:
+
+```yaml
+services:
+  abs-party:
+    image: 0xpr03/abs-party:latest
+    ports:
+      - "3456:3456"
+    environment:
+      - ABS_BASE_URL=https://abs.example.com
+    restart: unless-stopped
+```
+
+- Open `http://<host>:3456`, behind your HTTPS reverse proxy.
+- Images: `0xpr03/abs-party` (Docker Hub), `ghcr.io/0xpr03/abs-party`; amd64 + arm64.
+- Tags: `latest` (main), `<version>` (releases), `sha-<commit>`.
+
+### Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `ABS_BASE_URL` | `http://localhost:13378` | Your ABS instance, no trailing slash (**required**) |
+| `BIND` / `PORT` | `0.0.0.0:3456` | Listen address, or just the port |
+| `STATIC_DIR` | `./static` | Built SPA |
+| `RUST_LOG` | | e.g. `abs_party=info` |
+| `CORS_ORIGIN` | | Only if the SPA is served from a different origin |
+| `BYPASS_AUTH` | `0` | Tests only, never in production |
+
+### From source
+
+Development:
+
+```sh
+cd server && cargo run                    # Rust 1.85+
+cd client && npm install && npm run dev   # http://localhost:5173, proxies /api and /ws to :3456
+```
+
+Tests: `cargo test` in `server/`, `npm test` in `client/`.
+
+Docker image from source (`docker-compose.yml` builds locally; set `ABS_BASE_URL` in `.env`):
+
+```sh
+docker compose up -d --build
+```
+
+lima/nerdctl (`down` is required, `up` alone keeps the old container):
+
+```sh
+lima nerdctl compose down
+lima nerdctl compose build --no-cache
+lima nerdctl compose up -d
+```
+
+systemd: build `server/` (`cargo build --release`) and `client/` (`npm run build`, outputs to `server/static`), copy both to `/opt/abs-party`, then:
+
+```sh
+sudo useradd -r -s /sbin/nologin abs-party
+sudo mkdir -p /etc/abs-party
+sudo cp abs-party.env.example /etc/abs-party/env   # edit ABS_BASE_URL
+sudo cp abs-party.service /etc/systemd/system/
+sudo systemctl enable --now abs-party
+```
+
 ## How it works
 
 - **Log in with your ABS account.** The party server forwards the login to ABS; there are no separate accounts.
@@ -20,66 +93,3 @@ Listen to an audiobook together on a shared [Audiobookshelf](https://www.audiobo
 - **Rooms live in memory** and disappear when the last person leaves. No database.
 
 Stack: Rust (axum) server that also serves the Vue 3 SPA. See [ARCHITECTURE.md](ARCHITECTURE.md) for internals.
-
-## Running
-
-Configuration is through environment variables:
-
-| Variable | Default | |
-|---|---|---|
-| `ABS_BASE_URL` | `http://localhost:13378` | Your ABS instance, no trailing slash (**required**) |
-| `BIND` / `PORT` | `0.0.0.0:3456` | Listen address, or just the port |
-| `STATIC_DIR` | `./static` | Built SPA |
-| `RUST_LOG` | | e.g. `abs_party=info` |
-| `CORS_ORIGIN` | | Only if the SPA is served from a different origin |
-| `BYPASS_AUTH` | `0` | Tests only, never in production |
-
-### Docker
-
-```sh
-ABS_BASE_URL=https://abs.example.com docker compose up -d --build
-```
-
-Then open `http://<host>:3456` (put it behind your usual HTTPS reverse proxy).
-
-CI publishes prebuilt images for amd64 and arm64 after all tests pass on `main` (`latest`), and for `v*` tags (the version): `ghcr.io/0xpr03/abs-party` and `0xpr03/abs-party` on Docker Hub. To use one, replace `build: .` in `docker-compose.yml` with `image: 0xpr03/abs-party:latest`.
-
-### systemd
-
-Build the server (`cargo build --release` in `server/`) and the client (`npm run build` in `client/`, which outputs to `server/static`), copy both to `/opt/abs-party`, then:
-
-```sh
-sudo useradd -r -s /sbin/nologin abs-party
-sudo mkdir -p /etc/abs-party
-sudo cp abs-party.env.example /etc/abs-party/env   # edit ABS_BASE_URL
-sudo cp abs-party.service /etc/systemd/system/
-sudo systemctl enable --now abs-party
-```
-
-### Docker with lima/nerdctl
-
-```sh
-lima nerdctl compose down
-lima nerdctl compose build --no-cache
-lima nerdctl compose up -d
-lima nerdctl compose logs -f
-```
-
-The `down` step is required. Running `up` without it reuses the old container and silently ignores the new image.
-
-`--no-cache` is needed when source files have changed between builds.
-
-To set the ABS URL, either edit `docker-compose.yml` directly or create a `.env` file next to it:
-
-```
-ABS_BASE_URL=https://your-abs-instance.example.com
-```
-
-### Development
-
-```sh
-cd server && cargo run                    # Rust 1.85+
-cd client && npm install && npm run dev   # http://localhost:5173, proxies /api and /ws to :3456
-```
-
-Tests: `cargo test` in `server/`, `npm test` in `client/`.
