@@ -6,12 +6,20 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish images (sha-… tag only)
+        type: boolean
+        default: false
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
   DOCKERHUB_IMAGE: docker.io/0xpr03/abs-party
-  # Only main and release tags publish images; branches and PRs just build them
-  PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+  # Publish from main, v* tags, or a manual run with "publish"; otherwise only build
+  PUBLISH: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,7 +32,10 @@ jobs:
       run:
         working-directory: server
     steps:
+      # persist-credentials: false keeps the token away from build scripts
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -38,6 +49,8 @@ jobs:
         working-directory: client
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -46,60 +59,48 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # Each architecture builds natively on its own runner (arm64 under emulation would be
-  # several times slower); `publish` then joins both into one multi-arch tag per registry.
+  # Native build per arch, pushed untagged to GHCR; `publish` tags the multi-arch image
   image:
     needs: [server-tests, client-tests]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux/amd64
+          - arch: amd64
             runner: ubuntu-latest
-          - platform: linux/arm64
+          - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
+    outputs:
+      publish: ${{ env.PUBLISH }}
     steps:
-      - name: Prepare
-        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
-        env:
-          PLATFORM: ${{ matrix.platform }}
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: |
-            ${{ env.GHCR_IMAGE }}
-            ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ env.GHCR_IMAGE }}
       - uses: docker/login-action@v3
         if: env.PUBLISH == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/login-action@v3
-        if: env.PUBLISH == 'true'
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         id: build
         with:
           context: .
-          platforms: ${{ matrix.platform }}
+          platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Untagged, by digest; `publish` adds the tags. Without PUBLISH this only checks
-          # that the image builds.
-          tags: |
-            ${{ env.GHCR_IMAGE }}
-            ${{ env.DOCKERHUB_IMAGE }}
+          tags: ${{ env.GHCR_IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
-          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
       - name: Export digest
         if: env.PUBLISH == 'true'
         run: |
@@ -109,15 +110,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: env.PUBLISH == 'true'
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
 
   publish:
     needs: image
-    # Same condition as env.PUBLISH (a job-level `if` can't read env)
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: needs.image.outputs.publish == 'true'
+    environment: docker push  # Docker Hub secrets
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -148,12 +149,10 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=sha
-      - name: Create multi-arch tags
+      - name: Tag multi-arch image (copied from GHCR to Docker Hub)
         working-directory: ${{ runner.temp }}/digests
         run: |
           for image in "$GHCR_IMAGE" "$DOCKERHUB_IMAGE"; do
             tags=$(jq -r --arg img "$image" '.tags[] | select(startswith($img + ":")) | "-t " + .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-            docker buildx imagetools create $tags $(printf "$image@sha256:%s " *)
+            docker buildx imagetools create $tags $(printf "$GHCR_IMAGE@sha256:%s " *)
           done
-      - name: Inspect
-        run: docker buildx imagetools inspect "$GHCR_IMAGE:${{ steps.meta.outputs.version }}"
