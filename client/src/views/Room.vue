@@ -110,6 +110,15 @@
 
           <div class="sidebar-divider"></div>
 
+          <h3>This device</h3>
+          <label class="setting" :class="{ readonly: !wakeLock.supported }">
+            <input type="checkbox" :checked="keepAwake" :disabled="!wakeLock.supported"
+                   @change="e => setKeepAwake(e.target.checked)" />
+            <span>Keep screen on<template v-if="!wakeLock.supported"> (not supported by this browser)</template></span>
+          </label>
+
+          <div class="sidebar-divider"></div>
+
           <h3>Bookmarks</h3>
           <div class="bookmark-add">
             <input
@@ -133,6 +142,25 @@
         </div>
       </div>
 
+      <!-- Phones suspend pages that aren't on screen -->
+      <div v-if="showMobileHint" class="hint-overlay">
+        <div class="hint-card">
+          <h3>Keep this page open</h3>
+          <p>
+            To save battery, your phone pauses pages that are in the background or behind a locked screen.
+            Keep ABS Party open and the screen on, or you'll drop out of the room and stop hearing what the others do.
+          </p>
+          <p v-if="wakeLock.supported && keepAwake">
+            "Keep screen on" is enabled while you're in a room. You can turn it off in the sidebar.
+          </p>
+          <label class="setting">
+            <input type="checkbox" v-model="hintDontShowAgain" />
+            <span>Don't show this again</span>
+          </label>
+          <button class="hint-ok" @click="closeMobileHint">Got it</button>
+        </div>
+      </div>
+
       <!-- Event log -->
       <div v-if="eventLog.length > 0" class="event-log">
         <div v-for="(e, i) in eventLog" :key="i" class="event-entry" :class="`event-${e.level}`">
@@ -153,10 +181,13 @@ import { useSyncEngine } from '../composables/useSyncEngine.js'
 import { getBookmarks, createBookmark } from '../api/abs.js'
 import { useEventLog } from '../composables/useEventLog.js'
 import { useAudioCues } from '../composables/useAudioCues.js'
+import { useWakeLock } from '../composables/useWakeLock.js'
+import { useMediaSession } from '../composables/useMediaSession.js'
 import { shortenTitle } from '../utils/title.js'
 import { createRoomClock } from '../utils/roomClock.js'
 import { whenPlayable } from '../utils/playable.js'
 import { DEFAULT_ROOM_SETTINGS, loadRoomSettings, saveRoomSettings, normalizeRoomSettings } from '../utils/roomSettings.js'
+import { isMobileDevice, loadKeepAwake, saveKeepAwake, mobileHintDismissed, dismissMobileHint } from '../utils/device.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -205,6 +236,22 @@ let cancelPlayable = null
 let hasConnectedOnce = false
 
 const player = useAbsPlayer(absBase)
+
+const isMobile = isMobileDevice()
+const keepAwake = ref(loadKeepAwake(isMobile))
+const wakeLock = useWakeLock(keepAwake)
+const showMobileHint = ref(isMobile && !mobileHintDismissed())
+const hintDontShowAgain = ref(false)
+
+useMediaSession(() => roomState.item, player, {
+  play: () => {
+    if (player.blocked.value) resumeBlockedAudio()
+    else if (!player.isPlaying.value) togglePlay()
+  },
+  pause: () => { if (player.isPlaying.value) togglePlay() },
+  skip,
+  seekTo: seekRoom,
+})
 
 const { events: eventLog, addEvent } = useEventLog()
 const { playJoinLeave, playAlert } = useAudioCues(player.volume)
@@ -462,6 +509,19 @@ function rejoinRoom() {
   }
 }
 
+function setKeepAwake(on) {
+  keepAwake.value = on
+  saveKeepAwake(on)
+}
+
+function closeMobileHint() {
+  showMobileHint.value = false
+  if (hintDontShowAgain.value) dismissMobileHint()
+  // This click is a user gesture: a good moment for what browsers refuse without one
+  wakeLock.acquire()
+  if (player.blocked.value) resumeBlockedAudio()
+}
+
 function updateSetting(key, value) {
   if (!isHost.value) return
   const settings = { ...roomSettings, [key]: value }
@@ -490,28 +550,23 @@ function togglePlay() {
 }
 
 function onSeek(evt) {
-  if (!canControl.value) return
-  const pos = Number(evt.target.value)
-  player.seekTo(pos)
-  clock.set({ position: pos })
-  send({ type: 'seek', position: pos })
-  addEvent(`You seeked to ${fmt(pos)}`, 'normal')
+  seekRoom(Number(evt.target.value))
 }
 
 function skip(seconds) {
+  seekRoom(Math.max(0, player.currentTime.value + seconds))
+}
+
+function seekToBookmark(b) {
+  seekRoom(b.time)
+}
+
+function seekRoom(pos) {
   if (!canControl.value) return
-  const pos = Math.max(0, player.currentTime.value + seconds)
   player.seekTo(pos)
   clock.set({ position: pos })
   send({ type: 'seek', position: pos })
   addEvent(`You seeked to ${fmt(pos)}`, 'normal')
-}
-
-function seekToBookmark(b) {
-  player.seekTo(b.time)
-  clock.set({ position: b.time })
-  send({ type: 'seek', position: b.time })
-  addEvent(`You seeked to ${fmt(b.time)}`, 'normal')
 }
 
 async function loadBookmarks() {
@@ -624,6 +679,13 @@ function fmt(s) {
 .event-time { color: #444; flex-shrink: 0; }
 .event-normal .event-msg { color: #778; }
 .event-alert .event-msg { color: #e17055; }
+
+.hint-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 1rem; z-index: 100; }
+.hint-card { background: #16213e; border-radius: 12px; padding: 1.5rem; width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 0.75rem; }
+.hint-card h3 { margin: 0; color: #e0e0e0; }
+.hint-card p { margin: 0; font-size: 0.9rem; color: #ccc; line-height: 1.4; }
+.hint-card .setting { font-size: 0.9rem; }
+.hint-ok { padding: 0.65rem; background: #6c5ce7; border: none; border-radius: 6px; color: #fff; font-size: 1rem; cursor: pointer; }
 
 /* Phones: player and sidebar stack in one scrolling column; header and event log stay put */
 @media (max-width: 700px) {
