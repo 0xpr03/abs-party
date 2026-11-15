@@ -624,4 +624,20 @@ function fmt(s) {
 .event-time { color: #444; flex-shrink: 0; }
 .event-normal .event-msg { color: #778; }
 .event-alert .event-msg { color: #e17055; }
+
+/* Phones: player and sidebar stack in one scrolling column; header and event log stay put */
+@media (max-width: 700px) {
+  .room-header { gap: 0.5rem 1rem; padding: 0.6rem 1rem; }
+  .room-meta { flex-basis: 100%; min-width: 0; }
+  .room-title { font-size: 0.95rem; }
+  .room-code { margin-right: auto; }
+  .room-body { flex-direction: column; overflow-y: auto; }
+  .player-area { flex: none; padding: 1rem; overflow: visible; }
+  .player { gap: 1.1rem; }
+  .cover-wrap { width: min(220px, 55vw); height: min(220px, 55vw); }
+  .sidebar { width: auto; flex: none; overflow: visible; border-left: none; border-top: 1px solid #0f3460; }
+  .setting, .bookmark-item, .bookmark-input, .btn-bookmark-add { font-size: 0.9rem; }
+  .bookmark-item { padding: 0.25rem 0; }
+  .event-log { padding: 0.35rem 1rem calc(0.35rem + env(safe-area-inset-bottom)); }
+}
 </style>
